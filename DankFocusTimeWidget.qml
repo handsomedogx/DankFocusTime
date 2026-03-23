@@ -578,11 +578,14 @@ PluginComponent {
     }
 
     function ensureSchemaState() {
-        if (PluginService.loadPluginState(pluginId, "schemaVersion", 0) === stateSchemaVersion)
+        const currentSchemaVersion = PluginService.loadPluginState(pluginId, "schemaVersion", 0);
+        if (currentSchemaVersion === stateSchemaVersion)
             return;
 
+        const snapshotDays = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
+        daysState = snapshotDays;
+        PluginService.savePluginState(pluginId, "days", snapshotDays);
         PluginService.savePluginState(pluginId, "schemaVersion", stateSchemaVersion);
-        PluginService.savePluginState(pluginId, "days", TimeUtils.pruneDays(daysState, retentionDays, Date.now()));
     }
 
     function loadStateFromService() {
@@ -604,9 +607,9 @@ PluginComponent {
         if (!pluginId || !isMaster)
             return;
 
-        daysState = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
-        PluginService.savePluginState(pluginId, "schemaVersion", stateSchemaVersion);
-        PluginService.savePluginState(pluginId, "days", daysState);
+        const snapshotDays = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
+        daysState = snapshotDays;
+        PluginService.savePluginState(pluginId, "days", snapshotDays);
     }
 
     function currentTrackableSession() {
