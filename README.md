@@ -2,9 +2,10 @@
 
 `dankFocusTime` is a DMS widget plugin that tracks how long each focused window title stays active and lets you review retained daily history.
 
-<center>
-    <img src="assets/screenshot.png" alt="gui photo">
-</center>
+<p align="center">
+  <img src="assets/setting.png" height="450">
+  <img src="assets/ui.png" height="450">
+</p>
 
 ## What It Does
 
