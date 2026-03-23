@@ -1,14 +1,16 @@
 # Dank Focus Time
 
-`dankFocusTime` is a DMS widget plugin that tracks how long each focused window title stays active during the current day.
+`dankFocusTime` is a DMS widget plugin that tracks how long each focused window title stays active and lets you review retained daily history.
 
 ## What It Does
 
 - keeps a daily leaderboard of focused window titles
 - excludes locked time from accumulation
-- stores up to 30 days of history in plugin state
+- stores a configurable 7 to 90 days of history in plugin state
 - shows a timer icon in DankBar and opens a popout with per-app totals that expand into window and tab title details
-- lets the popout switch between overall, yesterday, and today views
+- lets the popout switch between overall, history, yesterday, and today views
+- adds a dedicated history browser for retained daily views
+- includes a settings page for language, default view, and retention days
 - localizes popout text for English and Chinese based on the current system locale
 
 ## Important Behavior
@@ -22,6 +24,7 @@ To avoid double-counting on multi-monitor setups, the widget elects one live ins
 
 - `plugin.json`: plugin manifest
 - `DankFocusTimeWidget.qml`: widget UI, collector lease logic, and state persistence
+- `DankFocusTimeSettings.qml`: plugin settings UI for defaults and retention
 - `TimeUtils.js`: small helpers for day-splitting, retention pruning, and duration formatting
 
 ## Install

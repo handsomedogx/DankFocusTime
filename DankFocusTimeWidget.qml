@@ -14,7 +14,7 @@ PluginComponent {
     layerNamespacePlugin: "dankFocusTime"
 
     readonly property int stateSchemaVersion: 1
-    readonly property int retentionDays: 30
+    readonly property int retentionDays: normalizedRetentionDays(pluginData.retentionDays)
     readonly property int leaseIntervalMs: 2000
     readonly property int leaseTtlMs: 5000
     readonly property int flushIntervalMs: 15000
@@ -23,7 +23,11 @@ PluginComponent {
     readonly property string ignoredAppId: "org.quickshell"
     readonly property string instanceId: "dft-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8)
     readonly property Toplevel activeWindow: ToplevelManager.activeToplevel
+    readonly property string languageMode: normalizedLanguageMode(pluginData.languageMode)
     readonly property string uiLanguageCode: {
+        if (languageMode === "zh" || languageMode === "en")
+            return languageMode;
+
         const localeName = (Qt.locale().name || "").toLowerCase();
         if (localeName.indexOf("zh") === 0)
             return "zh";
@@ -32,8 +36,9 @@ PluginComponent {
     readonly property var i18nCatalog: ({
         en: {
             focus_time: "Focus Time",
-            popout_details: "Switch between overall, yesterday, and today. Locked time is excluded from timing.",
+            popout_details: "Switch between overall, history, yesterday, and today. Locked time is excluded from timing.",
             overall: "Overall",
+            history: "History",
             yesterday: "Yesterday",
             today: "Today",
             tracked_days: "Tracked Days",
@@ -48,6 +53,7 @@ PluginComponent {
             empty_hint: "Keep the widget on a bar and focus an app window to start building the overall history.",
             nothing_to_show_period: "No data for {period} yet",
             empty_hint_period: "Focus app windows and check back later.",
+            browse_date: "Browse Date",
             collapse: "Collapse",
             expand: "Expand",
             live: "Live",
@@ -60,8 +66,9 @@ PluginComponent {
         },
         zh: {
             focus_time: "专注时长",
-            popout_details: "可在总计、昨天、今天之间切换查看，锁屏时间不会计入。",
+            popout_details: "可在总计、历史、昨天、今天之间切换查看，锁屏时间不会计入。",
             overall: "总计",
+            history: "历史",
             yesterday: "昨天",
             today: "今天",
             tracked_days: "统计天数",
@@ -76,6 +83,7 @@ PluginComponent {
             empty_hint: "把这个部件放在栏上并聚焦应用窗口后，这里就会开始累计总体历史。",
             nothing_to_show_period: "{period} 暂时没有数据",
             empty_hint_period: "继续使用应用一段时间后再回来查看。",
+            browse_date: "浏览日期",
             collapse: "收起",
             expand: "展开",
             live: "实时",
@@ -91,7 +99,8 @@ PluginComponent {
     property bool initialized: false
     property bool isMaster: false
     property real nowMs: Date.now()
-    property string selectedPeriod: "overall"
+    property string selectedPeriod: normalizedDefaultView(pluginData.defaultView)
+    property string historyDayKey: suggestedHistoryDayKey()
     property var daysState: ({})
     property var expandedApps: ({})
     property var collectorLease: null
@@ -100,12 +109,16 @@ PluginComponent {
 
     readonly property string todayKey: TimeUtils.dayKeyFromMs(nowMs)
     readonly property string yesterdayKey: previousDayKey(nowMs)
+    readonly property string historyMinDayKey: TimeUtils.retentionThresholdKey(retentionDays, nowMs)
+    readonly property string clampedHistoryDayKey: clampHistoryDayKey(historyDayKey)
     readonly property var mergedTodayEntries: buildEntriesForDay(todayKey)
     readonly property var mergedYesterdayEntries: buildEntriesForDay(yesterdayKey)
+    readonly property var mergedHistoryEntries: buildEntriesForDay(clampedHistoryDayKey)
     readonly property var retainedDayKeys: buildRetainedDayKeys()
     readonly property int trackedDaysCount: buildTrackedDaysCount()
     readonly property var periodTabs: ([
         { key: "overall", label: translateText("overall") },
+        { key: "history", label: translateText("history") },
         { key: "yesterday", label: translateText("yesterday") },
         { key: "today", label: translateText("today") }
     ])
@@ -132,7 +145,10 @@ PluginComponent {
     readonly property var overallAppGroups: buildAppGroupsFromEntries(overallEntries)
     readonly property var yesterdayAppGroups: buildAppGroupsFromEntries(mergedYesterdayEntries)
     readonly property var todayAppGroups: buildAppGroupsFromEntries(mergedTodayEntries)
+    readonly property var historyAppGroups: buildAppGroupsFromEntries(mergedHistoryEntries)
     readonly property var currentPeriodAppGroups: {
+        if (selectedPeriod === "history")
+            return historyAppGroups;
         if (selectedPeriod === "yesterday")
             return yesterdayAppGroups;
         if (selectedPeriod === "today")
@@ -140,6 +156,8 @@ PluginComponent {
         return overallAppGroups;
     }
     readonly property var currentTopEntry: currentPeriodAppGroups.length > 0 ? currentPeriodAppGroups[0] : null
+    readonly property bool canNavigateHistoryBack: clampedHistoryDayKey > historyMinDayKey
+    readonly property bool canNavigateHistoryForward: clampedHistoryDayKey < todayKey
 
     horizontalBarPill: Component {
         Item {
@@ -294,7 +312,7 @@ PluginComponent {
                                     property var tabData: modelData
                                     readonly property bool selected: root.selectedPeriod === tabData.key
 
-                                    width: (periodTabsRow.width - periodTabsRow.spacing * 2) / 3
+                                    width: (periodTabsRow.width - periodTabsRow.spacing * Math.max(0, root.periodTabs.length - 1)) / root.periodTabs.length
                                     implicitHeight: tabLabel.implicitHeight + Theme.spacingS * 2
                                     radius: Theme.cornerRadius
                                     color: selected ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
@@ -311,6 +329,88 @@ PluginComponent {
                                     MouseArea {
                                         anchors.fill: parent
                                         onClicked: root.setSelectedPeriod(tabData.key)
+                                    }
+                                }
+                            }
+                        }
+
+                        StyledRect {
+                            width: parent.width
+                            visible: root.selectedPeriod === "history"
+                            implicitHeight: historyNavRow.implicitHeight + Theme.spacingS * 2
+                            radius: Theme.cornerRadius
+                            color: Theme.surfaceContainer
+
+                            Row {
+                                id: historyNavRow
+                                x: Theme.spacingS
+                                y: Theme.spacingS
+                                width: parent.width - Theme.spacingS * 2
+                                spacing: Theme.spacingS
+
+                                StyledRect {
+                                    width: 36
+                                    height: 36
+                                    radius: Theme.cornerRadius
+                                    color: root.canNavigateHistoryBack ? Theme.surfaceContainerHigh : Theme.surfaceContainerHighest
+                                    opacity: root.canNavigateHistoryBack ? 1 : 0.55
+
+                                    StyledText {
+                                        anchors.centerIn: parent
+                                        text: "<"
+                                        font.pixelSize: Theme.fontSizeLarge
+                                        font.weight: Font.DemiBold
+                                        color: Theme.surfaceText
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: root.canNavigateHistoryBack
+                                        onClicked: root.stepHistoryDay(-1)
+                                    }
+                                }
+
+                                Column {
+                                    width: Math.max(0, historyNavRow.width - 36 - 36 - historyNavRow.spacing * 2)
+                                    spacing: Theme.spacingXS
+
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.translateText("browse_date")
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.clampedHistoryDayKey
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.DemiBold
+                                        color: Theme.surfaceText
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                }
+
+                                StyledRect {
+                                    width: 36
+                                    height: 36
+                                    radius: Theme.cornerRadius
+                                    color: root.canNavigateHistoryForward ? Theme.surfaceContainerHigh : Theme.surfaceContainerHighest
+                                    opacity: root.canNavigateHistoryForward ? 1 : 0.55
+
+                                    StyledText {
+                                        anchors.centerIn: parent
+                                        text: ">"
+                                        font.pixelSize: Theme.fontSizeLarge
+                                        font.weight: Font.DemiBold
+                                        color: Theme.surfaceText
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: root.canNavigateHistoryForward
+                                        onClicked: root.stepHistoryDay(1)
                                     }
                                 }
                             }
@@ -640,7 +740,22 @@ PluginComponent {
 
     onPluginIdChanged: tryInitialize()
     onActiveWindowChanged: syncTracking("active-window")
-    onSelectedPeriodChanged: expandedApps = ({})
+    onSelectedPeriodChanged: {
+        expandedApps = ({});
+        if (selectedPeriod === "history")
+            ensureHistoryDayKey();
+    }
+    onHistoryDayKeyChanged: {
+        if (selectedPeriod === "history")
+            expandedApps = ({});
+    }
+    onTodayKeyChanged: ensureHistoryDayKey()
+    onRetentionDaysChanged: {
+        daysState = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
+        ensureHistoryDayKey();
+        if (isMaster)
+            persistState("retention-change");
+    }
 
     Connections {
         target: root.activeWindow
@@ -1144,6 +1259,21 @@ PluginComponent {
         return entries;
     }
 
+    function normalizedLanguageMode(value) {
+        return value === "zh" || value === "en" ? value : "system";
+    }
+
+    function normalizedDefaultView(value) {
+        return value === "history" || value === "yesterday" || value === "today" ? value : "overall";
+    }
+
+    function normalizedRetentionDays(value) {
+        const numericValue = Math.round(Number(value || 30));
+        if (!isFinite(numericValue))
+            return 30;
+        return Math.max(7, Math.min(90, numericValue));
+    }
+
     function previousDayKey(referenceMs) {
         const date = new Date(referenceMs);
         date.setHours(0, 0, 0, 0);
@@ -1151,10 +1281,57 @@ PluginComponent {
         return TimeUtils.dayKeyFromMs(date.getTime());
     }
 
+    function dayKeyToDate(dayKey) {
+        const parts = (dayKey || "").split("-");
+        if (parts.length !== 3)
+            return new Date();
+
+        return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 0, 0, 0, 0);
+    }
+
+    function shiftDayKey(dayKey, offsetDays) {
+        const date = dayKeyToDate(dayKey);
+        date.setDate(date.getDate() + offsetDays);
+        return TimeUtils.dayKeyFromMs(date.getTime());
+    }
+
+    function suggestedHistoryDayKey() {
+        const keys = retainedDayKeys;
+        if (keys.indexOf(yesterdayKey) !== -1)
+            return yesterdayKey;
+        if (keys.length > 0)
+            return keys[keys.length - 1];
+        return yesterdayKey;
+    }
+
+    function clampHistoryDayKey(dayKey) {
+        let key = dayKey || suggestedHistoryDayKey();
+        if (key < historyMinDayKey)
+            key = historyMinDayKey;
+        if (key > todayKey)
+            key = todayKey;
+        return key;
+    }
+
+    function ensureHistoryDayKey() {
+        const normalized = clampHistoryDayKey(historyDayKey);
+        if (normalized !== historyDayKey)
+            historyDayKey = normalized;
+    }
+
     function setSelectedPeriod(periodKey) {
         if (selectedPeriod === periodKey)
             return;
+        if (periodKey === "history")
+            ensureHistoryDayKey();
         selectedPeriod = periodKey;
+    }
+
+    function stepHistoryDay(offsetDays) {
+        const nextKey = clampHistoryDayKey(shiftDayKey(clampedHistoryDayKey, offsetDays));
+        if (nextKey === clampedHistoryDayKey)
+            return;
+        historyDayKey = nextKey;
     }
 
     function calculateEntriesTotalMs(entries) {
@@ -1244,6 +1421,8 @@ PluginComponent {
     }
 
     function currentPeriodLabel() {
+        if (selectedPeriod === "history")
+            return clampedHistoryDayKey;
         if (selectedPeriod === "yesterday")
             return translateText("yesterday");
         if (selectedPeriod === "today")

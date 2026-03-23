@@ -1,12 +1,14 @@
 {
   "id": "dankFocusTime",
   "name": "Dank Focus Time",
-  "description": "Track daily focused-window time and inspect today's window leaderboard from a bar popout.",
+  "description": "Track focused-window time and browse per-app focus history from a bar popout.",
   "version": "0.1.0",
   "author": "handsomedogx",
   "icon": "timer",
   "type": "widget",
   "capabilities": ["dankbar-widget", "monitoring"],
   "component": "./DankFocusTimeWidget.qml",
+  "settings": "./DankFocusTimeSettings.qml",
+  "permissions": ["settings_read", "settings_write"],
   "requires_dms": ">=1.4.0"
 }
