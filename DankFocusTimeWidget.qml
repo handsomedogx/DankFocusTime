@@ -32,21 +32,22 @@ PluginComponent {
     readonly property var i18nCatalog: ({
         en: {
             focus_time: "Focus Time",
-            popout_details: "Overall totals across retained history. Locked time is excluded from timing.",
+            popout_details: "Switch between overall, yesterday, and today. Locked time is excluded from timing.",
             overall: "Overall",
+            yesterday: "Yesterday",
             today: "Today",
             tracked_days: "Tracked Days",
-            status_locked: "Locked. Timing is paused until you unlock.",
-            status_tracking: "Tracking focus time now.",
-            status_ready: "Collector is ready and waiting for a focused window.",
-            status_synced: "Showing synced data from another bar instance.",
-            status_waiting: "Waiting to acquire the collector lease.",
-            top_app: "Top app: {app} • {duration}",
+            leaderboard: "Leaderboard",
+            leaderboard_overall_hint: "App totals across the last {days} days. Click an app to expand window and tab titles.",
+            leaderboard_period_hint: "App totals for {period}. Click an app to expand window and tab titles.",
+            top_app_overall: "Top app overall: {app} • {duration}",
+            top_app: "Top app in {period}: {app} • {duration}",
             no_focus_time: "No focused-window time has been recorded yet.",
+            no_focus_time_period: "No focused-window time has been recorded for {period} yet.",
             nothing_to_show: "Nothing to show yet",
             empty_hint: "Keep the widget on a bar and focus an app window to start building the overall history.",
-            retained_leaderboard: "Retained Leaderboard",
-            retained_leaderboard_hint: "App totals across the last {days} days. Click an app to expand window and tab titles.",
+            nothing_to_show_period: "No data for {period} yet",
+            empty_hint_period: "Focus app windows and check back later.",
             collapse: "Collapse",
             expand: "Expand",
             live: "Live",
@@ -59,21 +60,22 @@ PluginComponent {
         },
         zh: {
             focus_time: "专注时长",
-            popout_details: "显示保留历史中的总体统计，锁屏时间不会计入。",
+            popout_details: "可在总计、昨天、今天之间切换查看，锁屏时间不会计入。",
             overall: "总计",
+            yesterday: "昨天",
             today: "今天",
             tracked_days: "统计天数",
-            status_locked: "设备已锁定，解锁前暂停计时。",
-            status_tracking: "正在统计专注时长。",
-            status_ready: "采集器已就绪，等待可统计的聚焦窗口。",
-            status_synced: "当前显示的是另一处栏实例同步过来的数据。",
-            status_waiting: "正在等待获取采集租约。",
-            top_app: "最高应用：{app} • {duration}",
+            leaderboard: "排行",
+            leaderboard_overall_hint: "按应用汇总展示最近 {days} 天的时长，点击应用可展开窗口和标签标题。",
+            leaderboard_period_hint: "按应用汇总展示 {period} 的时长，点击应用可展开窗口和标签标题。",
+            top_app_overall: "总计最高应用：{app} • {duration}",
+            top_app: "{period} 最高应用：{app} • {duration}",
             no_focus_time: "还没有记录到聚焦时长。",
+            no_focus_time_period: "{period} 还没有记录到聚焦时长。",
             nothing_to_show: "暂时没有数据",
             empty_hint: "把这个部件放在栏上并聚焦应用窗口后，这里就会开始累计总体历史。",
-            retained_leaderboard: "历史排行",
-            retained_leaderboard_hint: "先按应用汇总展示最近 {days} 天的时长，点击应用可展开窗口和标签标题。",
+            nothing_to_show_period: "{period} 暂时没有数据",
+            empty_hint_period: "继续使用应用一段时间后再回来查看。",
             collapse: "收起",
             expand: "展开",
             live: "实时",
@@ -89,6 +91,7 @@ PluginComponent {
     property bool initialized: false
     property bool isMaster: false
     property real nowMs: Date.now()
+    property string selectedPeriod: "overall"
     property var daysState: ({})
     property var expandedApps: ({})
     property var collectorLease: null
@@ -96,9 +99,16 @@ PluginComponent {
     property var activeSession: null
 
     readonly property string todayKey: TimeUtils.dayKeyFromMs(nowMs)
+    readonly property string yesterdayKey: previousDayKey(nowMs)
     readonly property var mergedTodayEntries: buildEntriesForDay(todayKey)
+    readonly property var mergedYesterdayEntries: buildEntriesForDay(yesterdayKey)
     readonly property var retainedDayKeys: buildRetainedDayKeys()
     readonly property int trackedDaysCount: buildTrackedDaysCount()
+    readonly property var periodTabs: ([
+        { key: "overall", label: translateText("overall") },
+        { key: "yesterday", label: translateText("yesterday") },
+        { key: "today", label: translateText("today") }
+    ])
     readonly property real todayPersistedMs: {
         const day = daysState[todayKey];
         return TimeUtils.isPlainObject(day) ? Number(day.totalMs || 0) : 0;
@@ -116,21 +126,20 @@ PluginComponent {
         return Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
     }
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
+    readonly property real yesterdayTotalMs: calculateEntriesTotalMs(mergedYesterdayEntries)
     readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
     readonly property var overallEntries: buildOverallEntries()
-    readonly property var overallAppGroups: buildOverallAppGroups()
-    readonly property var topOverallEntry: overallAppGroups.length > 0 ? overallAppGroups[0] : null
-    readonly property string collectorStatusText: {
-        if (SessionService.locked)
-            return translateText("status_locked");
-        if (hasFreshLiveSession)
-            return translateText("status_tracking");
-        if (isMaster)
-            return translateText("status_ready");
-        if (hasFreshLease)
-            return translateText("status_synced");
-        return translateText("status_waiting");
+    readonly property var overallAppGroups: buildAppGroupsFromEntries(overallEntries)
+    readonly property var yesterdayAppGroups: buildAppGroupsFromEntries(mergedYesterdayEntries)
+    readonly property var todayAppGroups: buildAppGroupsFromEntries(mergedTodayEntries)
+    readonly property var currentPeriodAppGroups: {
+        if (selectedPeriod === "yesterday")
+            return yesterdayAppGroups;
+        if (selectedPeriod === "today")
+            return todayAppGroups;
+        return overallAppGroups;
     }
+    readonly property var currentTopEntry: currentPeriodAppGroups.length > 0 ? currentPeriodAppGroups[0] : null
 
     horizontalBarPill: Component {
         Item {
@@ -242,6 +251,24 @@ PluginComponent {
                                 spacing: Theme.spacingXS
 
                                 StyledText {
+                                    text: root.translateText("yesterday")
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    text: TimeUtils.formatDuration(root.yesterdayTotalMs)
+                                    font.pixelSize: Theme.fontSizeLarge + 2
+                                    font.weight: Font.DemiBold
+                                    color: Theme.surfaceText
+                                }
+                            }
+
+                            Column {
+                                width: (parent.width - Theme.spacingM * 2) / 3
+                                spacing: Theme.spacingXS
+
+                                StyledText {
                                     text: root.translateText("today")
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
@@ -254,36 +281,43 @@ PluginComponent {
                                     color: Theme.surfaceText
                                 }
                             }
+                        }
 
-                            Column {
-                                width: (parent.width - Theme.spacingM * 2) / 3
-                                spacing: Theme.spacingXS
+                        Row {
+                            id: periodTabsRow
+                            width: parent.width
+                            spacing: Theme.spacingS
 
-                                StyledText {
-                                    text: root.translateText("tracked_days")
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                }
+                            Repeater {
+                                model: root.periodTabs
+                                delegate: StyledRect {
+                                    property var tabData: modelData
+                                    readonly property bool selected: root.selectedPeriod === tabData.key
 
-                                StyledText {
-                                    text: root.trackedDaysCount.toString()
-                                    font.pixelSize: Theme.fontSizeLarge + 2
-                                    font.weight: Font.DemiBold
-                                    color: Theme.surfaceText
+                                    width: (periodTabsRow.width - periodTabsRow.spacing * 2) / 3
+                                    implicitHeight: tabLabel.implicitHeight + Theme.spacingS * 2
+                                    radius: Theme.cornerRadius
+                                    color: selected ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+
+                                    StyledText {
+                                        id: tabLabel
+                                        anchors.centerIn: parent
+                                        text: tabData.label
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        font.weight: selected ? Font.DemiBold : Font.Normal
+                                        color: selected ? Theme.primary : Theme.surfaceVariantText
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: root.setSelectedPeriod(tabData.key)
+                                    }
                                 }
                             }
                         }
 
                         StyledText {
-                            text: root.collectorStatusText
-                            width: parent.width
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceVariantText
-                            wrapMode: Text.WordWrap
-                        }
-
-                        StyledText {
-                            text: root.topOverallSummaryText()
+                            text: root.topPeriodSummaryText()
                             width: parent.width
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
@@ -295,7 +329,7 @@ PluginComponent {
 
                 Loader {
                     width: parent.width
-                    sourceComponent: root.overallAppGroups.length > 0 ? entriesListComponent : emptyStateComponent
+                    sourceComponent: root.currentPeriodAppGroups.length > 0 ? entriesListComponent : emptyStateComponent
                 }
             }
         }
@@ -321,14 +355,14 @@ PluginComponent {
                 spacing: Theme.spacingXS
 
                 StyledText {
-                    text: root.translateText("nothing_to_show")
+                    text: root.currentEmptyTitleText()
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
 
                 StyledText {
-                    text: root.translateText("empty_hint")
+                    text: root.currentEmptyHintText()
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -350,16 +384,14 @@ PluginComponent {
                 spacing: Theme.spacingS
 
                 StyledText {
-                    text: root.translateText("retained_leaderboard")
+                    text: root.translateText("leaderboard")
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
 
                 StyledText {
-                    text: root.translateText("retained_leaderboard_hint", {
-                        days: root.retentionDays
-                    })
+                    text: root.currentLeaderboardHintText()
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -379,7 +411,7 @@ PluginComponent {
                         spacing: Theme.spacingS
 
                         Repeater {
-                            model: root.overallAppGroups
+                            model: root.currentPeriodAppGroups
                             delegate: appGroupComponent
                         }
                     }
@@ -608,6 +640,7 @@ PluginComponent {
 
     onPluginIdChanged: tryInitialize()
     onActiveWindowChanged: syncTracking("active-window")
+    onSelectedPeriodChanged: expandedApps = ({})
 
     Connections {
         target: root.activeWindow
@@ -1111,11 +1144,35 @@ PluginComponent {
         return entries;
     }
 
-    function buildOverallAppGroups() {
-        const aggregate = {};
+    function previousDayKey(referenceMs) {
+        const date = new Date(referenceMs);
+        date.setHours(0, 0, 0, 0);
+        date.setDate(date.getDate() - 1);
+        return TimeUtils.dayKeyFromMs(date.getTime());
+    }
 
-        for (let i = 0; i < overallEntries.length; i++) {
-            const entry = overallEntries[i];
+    function setSelectedPeriod(periodKey) {
+        if (selectedPeriod === periodKey)
+            return;
+        selectedPeriod = periodKey;
+    }
+
+    function calculateEntriesTotalMs(entries) {
+        let total = 0;
+        const source = Array.isArray(entries) ? entries : [];
+
+        for (let i = 0; i < source.length; i++)
+            total += Number(source[i].totalMs || 0);
+
+        return total;
+    }
+
+    function buildAppGroupsFromEntries(entries) {
+        const aggregate = {};
+        const source = Array.isArray(entries) ? entries : [];
+
+        for (let i = 0; i < source.length; i++) {
+            const entry = source[i];
             const appKey = entry.appId || entry.appName || entry.title || entry.bucketKey;
 
             if (!TimeUtils.isPlainObject(aggregate[appKey])) {
@@ -1186,13 +1243,62 @@ PluginComponent {
         return rendered;
     }
 
-    function topOverallSummaryText() {
-        if (!topOverallEntry)
-            return translateText("no_focus_time");
+    function currentPeriodLabel() {
+        if (selectedPeriod === "yesterday")
+            return translateText("yesterday");
+        if (selectedPeriod === "today")
+            return translateText("today");
+        return translateText("overall");
+    }
+
+    function currentLeaderboardHintText() {
+        if (selectedPeriod === "overall") {
+            return translateText("leaderboard_overall_hint", {
+                days: retentionDays
+            });
+        }
+
+        return translateText("leaderboard_period_hint", {
+            period: currentPeriodLabel()
+        });
+    }
+
+    function currentEmptyTitleText() {
+        if (selectedPeriod === "overall")
+            return translateText("nothing_to_show");
+
+        return translateText("nothing_to_show_period", {
+            period: currentPeriodLabel()
+        });
+    }
+
+    function currentEmptyHintText() {
+        if (selectedPeriod === "overall")
+            return translateText("empty_hint");
+
+        return translateText("empty_hint_period");
+    }
+
+    function topPeriodSummaryText() {
+        if (!currentTopEntry) {
+            if (selectedPeriod === "overall")
+                return translateText("no_focus_time");
+            return translateText("no_focus_time_period", {
+                period: currentPeriodLabel()
+            });
+        }
+
+        if (selectedPeriod === "overall") {
+            return translateText("top_app_overall", {
+                app: displayNameForAppGroup(currentTopEntry),
+                duration: TimeUtils.formatDuration(currentTopEntry.totalMs)
+            });
+        }
 
         return translateText("top_app", {
-            app: displayNameForAppGroup(topOverallEntry),
-            duration: TimeUtils.formatDuration(topOverallEntry.totalMs)
+            period: currentPeriodLabel(),
+            app: displayNameForAppGroup(currentTopEntry),
+            duration: TimeUtils.formatDuration(currentTopEntry.totalMs)
         });
     }
 
