@@ -23,6 +23,68 @@ PluginComponent {
     readonly property string ignoredAppId: "org.quickshell"
     readonly property string instanceId: "dft-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8)
     readonly property Toplevel activeWindow: ToplevelManager.activeToplevel
+    readonly property string uiLanguageCode: {
+        const localeName = (Qt.locale().name || "").toLowerCase();
+        if (localeName.indexOf("zh") === 0)
+            return "zh";
+        return "en";
+    }
+    readonly property var i18nCatalog: ({
+        en: {
+            focus_time: "Focus Time",
+            popout_details: "Overall totals across retained history. Locked time is excluded from timing.",
+            overall: "Overall",
+            today: "Today",
+            tracked_days: "Tracked Days",
+            status_locked: "Locked. Timing is paused until you unlock.",
+            status_tracking: "Tracking focus time now.",
+            status_ready: "Collector is ready and waiting for a focused window.",
+            status_synced: "Showing synced data from another bar instance.",
+            status_waiting: "Waiting to acquire the collector lease.",
+            top_app: "Top app: {app} • {duration}",
+            no_focus_time: "No focused-window time has been recorded yet.",
+            nothing_to_show: "Nothing to show yet",
+            empty_hint: "Keep the widget on a bar and focus an app window to start building the overall history.",
+            retained_leaderboard: "Retained Leaderboard",
+            retained_leaderboard_hint: "App totals across the last {days} days. Click an app to expand window and tab titles.",
+            collapse: "Collapse",
+            expand: "Expand",
+            live: "Live",
+            untitled_window: "Untitled Window",
+            unknown_app: "Unknown App",
+            one_title: "1 title",
+            many_titles: "{count} titles",
+            one_day: "1 day",
+            many_days: "{count} days"
+        },
+        zh: {
+            focus_time: "专注时长",
+            popout_details: "显示保留历史中的总体统计，锁屏时间不会计入。",
+            overall: "总计",
+            today: "今天",
+            tracked_days: "统计天数",
+            status_locked: "设备已锁定，解锁前暂停计时。",
+            status_tracking: "正在统计专注时长。",
+            status_ready: "采集器已就绪，等待可统计的聚焦窗口。",
+            status_synced: "当前显示的是另一处栏实例同步过来的数据。",
+            status_waiting: "正在等待获取采集租约。",
+            top_app: "最高应用：{app} • {duration}",
+            no_focus_time: "还没有记录到聚焦时长。",
+            nothing_to_show: "暂时没有数据",
+            empty_hint: "把这个部件放在栏上并聚焦应用窗口后，这里就会开始累计总体历史。",
+            retained_leaderboard: "历史排行",
+            retained_leaderboard_hint: "先按应用汇总展示最近 {days} 天的时长，点击应用可展开窗口和标签标题。",
+            collapse: "收起",
+            expand: "展开",
+            live: "实时",
+            untitled_window: "未命名窗口",
+            unknown_app: "未知应用",
+            one_title: "1 个标题",
+            many_titles: "{count} 个标题",
+            one_day: "1 天",
+            many_days: "{count} 天"
+        }
+    })
 
     property bool initialized: false
     property bool isMaster: false
@@ -60,14 +122,14 @@ PluginComponent {
     readonly property var topOverallEntry: overallAppGroups.length > 0 ? overallAppGroups[0] : null
     readonly property string collectorStatusText: {
         if (SessionService.locked)
-            return "Locked - timing is paused until you unlock.";
+            return translateText("status_locked");
         if (hasFreshLiveSession)
-            return (liveSession.title || liveSession.appName || "Focused window") + " is accumulating time now.";
+            return translateText("status_tracking");
         if (isMaster)
-            return "Collector is ready and waiting for a focused window.";
+            return translateText("status_ready");
         if (hasFreshLease)
-            return "Showing synced data from another bar instance.";
-        return "Waiting to acquire the collector lease.";
+            return translateText("status_synced");
+        return translateText("status_waiting");
     }
 
     horizontalBarPill: Component {
@@ -132,8 +194,8 @@ PluginComponent {
 
     popoutContent: Component {
         PopoutComponent {
-            headerText: "Focus Time"
-            detailsText: "Overall totals across retained history. Locked time is excluded from timing."
+            headerText: root.translateText("focus_time")
+            detailsText: root.translateText("popout_details")
             showCloseButton: true
 
             Column {
@@ -162,7 +224,7 @@ PluginComponent {
                                 spacing: Theme.spacingXS
 
                                 StyledText {
-                                    text: "Overall"
+                                    text: root.translateText("overall")
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
                                 }
@@ -180,7 +242,7 @@ PluginComponent {
                                 spacing: Theme.spacingXS
 
                                 StyledText {
-                                    text: "Today"
+                                    text: root.translateText("today")
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
                                 }
@@ -198,7 +260,7 @@ PluginComponent {
                                 spacing: Theme.spacingXS
 
                                 StyledText {
-                                    text: "Tracked Days"
+                                    text: root.translateText("tracked_days")
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
                                 }
@@ -214,18 +276,19 @@ PluginComponent {
 
                         StyledText {
                             text: root.collectorStatusText
+                            width: parent.width
                             font.pixelSize: Theme.fontSizeMedium
                             color: Theme.surfaceVariantText
                             wrapMode: Text.WordWrap
                         }
 
                         StyledText {
-                            text: root.topOverallEntry
-                                ? "Top app: " + root.displayNameForAppGroup(root.topOverallEntry) + " • " + TimeUtils.formatDuration(root.topOverallEntry.totalMs)
-                                : "No focused-window time has been recorded yet."
+                            text: root.topOverallSummaryText()
+                            width: parent.width
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
-                            wrapMode: Text.WordWrap
+                            maximumLineCount: 1
+                            elide: Text.ElideRight
                         }
                     }
                 }
@@ -258,14 +321,14 @@ PluginComponent {
                 spacing: Theme.spacingXS
 
                 StyledText {
-                    text: "Nothing to show yet"
+                    text: root.translateText("nothing_to_show")
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
 
                 StyledText {
-                    text: "Keep the widget on a bar and focus an app window to start building the overall history."
+                    text: root.translateText("empty_hint")
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -287,14 +350,16 @@ PluginComponent {
                 spacing: Theme.spacingS
 
                 StyledText {
-                    text: "Retained Leaderboard"
+                    text: root.translateText("retained_leaderboard")
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
 
                 StyledText {
-                    text: "App totals across the last " + root.retentionDays + " days. Click an app to expand window and tab titles."
+                    text: root.translateText("retained_leaderboard_hint", {
+                        days: root.retentionDays
+                    })
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -424,7 +489,7 @@ PluginComponent {
 
                             StyledText {
                                 id: actionText
-                                text: root.isAppExpanded(groupData.appKey) ? "Collapse" : "Expand"
+                                text: root.isAppExpanded(groupData.appKey) ? root.translateText("collapse") : root.translateText("expand")
                                 font.pixelSize: Theme.fontSizeSmall
                                 color: root.isAppGroupLive(groupData) ? Theme.primary : Theme.surfaceVariantText
                                 horizontalAlignment: Text.AlignRight
@@ -484,7 +549,7 @@ PluginComponent {
                     spacing: Theme.spacingXS
 
                     StyledText {
-                        text: entryData.title || entryData.appName || "Untitled Window"
+                        text: root.displayTitleForEntry(entryData)
                         font.pixelSize: Theme.fontSizeSmall + 1
                         font.weight: Font.DemiBold
                         color: Theme.surfaceText
@@ -521,7 +586,7 @@ PluginComponent {
 
                     StyledText {
                         id: detailLiveText
-                        text: root.isLiveEntry(entryData) ? "Live" : ""
+                        text: root.isLiveEntry(entryData) ? root.translateText("live") : ""
                         visible: text.length > 0
                         font.pixelSize: Theme.fontSizeSmall
                         color: Theme.primary
@@ -1104,6 +1169,49 @@ PluginComponent {
         return groups;
     }
 
+    function translateText(key, params) {
+        const languageCatalog = TimeUtils.isPlainObject(i18nCatalog[uiLanguageCode]) ? i18nCatalog[uiLanguageCode] : i18nCatalog.en;
+        let text = languageCatalog[key];
+        if (text === undefined && TimeUtils.isPlainObject(i18nCatalog.en))
+            text = i18nCatalog.en[key];
+        if (text === undefined)
+            return key;
+
+        if (!TimeUtils.isPlainObject(params))
+            return text;
+
+        let rendered = text;
+        for (const name in params)
+            rendered = rendered.replace("{" + name + "}", String(params[name]));
+        return rendered;
+    }
+
+    function topOverallSummaryText() {
+        if (!topOverallEntry)
+            return translateText("no_focus_time");
+
+        return translateText("top_app", {
+            app: displayNameForAppGroup(topOverallEntry),
+            duration: TimeUtils.formatDuration(topOverallEntry.totalMs)
+        });
+    }
+
+    function formatTitlesLabel(count) {
+        if (count === 1)
+            return translateText("one_title");
+        return translateText("many_titles", {
+            count: count
+        });
+    }
+
+    function formatDaysLabel(count) {
+        if (count === 1)
+            return translateText("one_day");
+        return translateText("many_days", {
+            count: count
+        });
+    }
+
     function isLiveEntry(entry) {
         return hasFreshLiveSession
             && TimeUtils.isPlainObject(entry)
@@ -1145,17 +1253,50 @@ PluginComponent {
     }
 
     function initialForEntry(entry) {
-        const appName = entry && entry.appName ? entry.appName : "";
+        const appName = displayAppNameForEntry(entry);
         if (appName.length > 0)
             return appName.charAt(0).toUpperCase();
-        const title = entry && entry.title ? entry.title : "";
+        const title = displayTitleForEntry(entry);
         return title.length > 0 ? title.charAt(0).toUpperCase() : "?";
+    }
+
+    function displayTitleForEntry(entry) {
+        if (!entry)
+            return translateText("untitled_window");
+
+        const title = entry.title ? entry.title.toString().trim() : "";
+        if (title.length > 0 && title !== "Untitled Window" && title !== "Unknown Window")
+            return title;
+
+        const appName = entry.appName ? entry.appName.toString().trim() : "";
+        if (appName.length > 0 && appName !== "Unknown App")
+            return appName;
+
+        return translateText("untitled_window");
+    }
+
+    function displayAppNameForEntry(entry) {
+        if (!entry)
+            return translateText("unknown_app");
+
+        const appName = entry.appName ? entry.appName.toString().trim() : "";
+        if (appName.length > 0 && appName !== "Unknown App")
+            return appName;
+
+        const title = entry.title ? entry.title.toString().trim() : "";
+        if (title.length > 0 && title !== "Untitled Window" && title !== "Unknown Window")
+            return title;
+
+        if (entry.appId)
+            return entry.appId;
+
+        return translateText("unknown_app");
     }
 
     function displayNameForAppGroup(group) {
         if (!group)
-            return "Unknown App";
-        return group.appName || group.title || group.appId || "Unknown App";
+            return translateText("unknown_app");
+        return displayAppNameForEntry(group);
     }
 
     function subtitleForAppGroup(group) {
@@ -1164,7 +1305,7 @@ PluginComponent {
 
         const parts = [];
         if (group.titleCount > 0)
-            parts.push(group.titleCount === 1 ? "1 title" : group.titleCount + " titles");
+            parts.push(formatTitlesLabel(group.titleCount));
         if (group.appId && group.appId !== group.appName)
             parts.push(group.appId);
         return parts.join(" • ");
@@ -1176,9 +1317,9 @@ PluginComponent {
 
         const parts = [];
         if (entry.dayCount && entry.dayCount > 1)
-            parts.push(entry.dayCount + " days");
+            parts.push(formatDaysLabel(entry.dayCount));
         if (entry.appName && entry.appName !== entry.title)
-            parts.push(entry.appName);
+            parts.push(displayAppNameForEntry(entry));
         return parts.join(" • ");
     }
 
@@ -1187,9 +1328,9 @@ PluginComponent {
             return "";
         const parts = [];
         if (entry.appName && entry.appName !== entry.title)
-            parts.push(entry.appName);
+            parts.push(displayAppNameForEntry(entry));
         if (entry.dayCount && entry.dayCount > 1)
-            parts.push(entry.dayCount + " days");
+            parts.push(formatDaysLabel(entry.dayCount));
         return parts.join(" • ");
     }
 }

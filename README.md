@@ -8,6 +8,7 @@
 - excludes locked time from accumulation
 - stores up to 30 days of history in plugin state
 - shows a timer icon in DankBar and opens a popout with per-app totals that expand into window and tab title details
+- localizes popout text for English and Chinese based on the current system locale
 
 ## Important Behavior
 
