@@ -7,7 +7,7 @@
 - keeps a daily leaderboard of focused window titles
 - excludes locked time from accumulation
 - stores up to 30 days of history in plugin state
-- shows a timer icon in DankBar and opens a popout with overall retained totals plus today's summary
+- shows a timer icon in DankBar and opens a popout with per-app totals that expand into window and tab title details
 
 ## Important Behavior
 

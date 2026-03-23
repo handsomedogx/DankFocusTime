@@ -28,6 +28,7 @@ PluginComponent {
     property bool isMaster: false
     property real nowMs: Date.now()
     property var daysState: ({})
+    property var expandedApps: ({})
     property var collectorLease: null
     property var liveSession: null
     property var activeSession: null
@@ -55,7 +56,8 @@ PluginComponent {
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
     readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
     readonly property var overallEntries: buildOverallEntries()
-    readonly property var topOverallEntry: overallEntries.length > 0 ? overallEntries[0] : null
+    readonly property var overallAppGroups: buildOverallAppGroups()
+    readonly property var topOverallEntry: overallAppGroups.length > 0 ? overallAppGroups[0] : null
     readonly property string collectorStatusText: {
         if (SessionService.locked)
             return "Locked - timing is paused until you unlock.";
@@ -219,7 +221,7 @@ PluginComponent {
 
                         StyledText {
                             text: root.topOverallEntry
-                                ? "Top title: " + root.topOverallEntry.title + " • " + TimeUtils.formatDuration(root.topOverallEntry.totalMs)
+                                ? "Top app: " + root.displayNameForAppGroup(root.topOverallEntry) + " • " + TimeUtils.formatDuration(root.topOverallEntry.totalMs)
                                 : "No focused-window time has been recorded yet."
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
@@ -230,7 +232,7 @@ PluginComponent {
 
                 Loader {
                     width: parent.width
-                    sourceComponent: root.overallEntries.length > 0 ? entriesListComponent : emptyStateComponent
+                    sourceComponent: root.overallAppGroups.length > 0 ? entriesListComponent : emptyStateComponent
                 }
             }
         }
@@ -292,7 +294,7 @@ PluginComponent {
                 }
 
                 StyledText {
-                    text: "Window-title totals across the last " + root.retentionDays + " days."
+                    text: "App totals across the last " + root.retentionDays + " days. Click an app to expand window and tab titles."
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -312,8 +314,8 @@ PluginComponent {
                         spacing: Theme.spacingS
 
                         Repeater {
-                            model: root.overallEntries
-                            delegate: entryRowComponent
+                            model: root.overallAppGroups
+                            delegate: appGroupComponent
                         }
                     }
                 }
@@ -322,62 +324,168 @@ PluginComponent {
     }
 
     Component {
-        id: entryRowComponent
+        id: appGroupComponent
+
+        Item {
+            property var groupData: modelData
+
+            width: parent ? parent.width : 0
+            implicitHeight: groupColumn.implicitHeight
+
+            Column {
+                id: groupColumn
+                width: parent.width
+                spacing: Theme.spacingXS
+
+                StyledRect {
+                    width: parent.width
+                    implicitHeight: contentRow.implicitHeight + Theme.spacingM * 2
+                    radius: Theme.cornerRadius
+                    color: root.isAppGroupLive(groupData) ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+
+                    Row {
+                        id: contentRow
+                        x: Theme.spacingM
+                        y: Theme.spacingM
+                        width: parent.width - Theme.spacingM * 2
+                        spacing: Theme.spacingM
+
+                        Item {
+                            id: iconHolder
+                            width: 34
+                            height: 34
+
+                            IconImage {
+                                id: appIcon
+                                anchors.fill: parent
+                                source: root.iconSourceForEntry(groupData)
+                                visible: status === Image.Ready
+                                smooth: true
+                                mipmap: true
+                                asynchronous: true
+                            }
+
+                            StyledRect {
+                                anchors.fill: parent
+                                radius: width / 2
+                                color: Theme.surfaceContainerHighest
+                                visible: !appIcon.visible
+
+                                StyledText {
+                                    anchors.centerIn: parent
+                                    text: root.initialForEntry(groupData)
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    font.weight: Font.DemiBold
+                                    color: Theme.surfaceText
+                                }
+                            }
+                        }
+
+                        Column {
+                            id: textColumn
+                            width: Math.max(0, contentRow.width - iconHolder.width - durationColumn.width - contentRow.spacing * 2)
+                            spacing: Theme.spacingXS
+
+                            StyledText {
+                                text: root.displayNameForAppGroup(groupData)
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.DemiBold
+                                color: Theme.surfaceText
+                                maximumLineCount: 1
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+
+                            StyledText {
+                                text: root.subtitleForAppGroup(groupData)
+                                visible: text.length > 0
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                maximumLineCount: 1
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+                        }
+
+                        Column {
+                            id: durationColumn
+                            width: Math.max(durationText.implicitWidth, actionText.implicitWidth)
+                            spacing: Theme.spacingXS
+
+                            StyledText {
+                                id: durationText
+                                text: TimeUtils.formatDuration(groupData.totalMs)
+                                font.pixelSize: Theme.fontSizeSmall + 1
+                                font.weight: Font.DemiBold
+                                color: Theme.surfaceText
+                                horizontalAlignment: Text.AlignRight
+                                width: parent.width
+                            }
+
+                            StyledText {
+                                id: actionText
+                                text: root.isAppExpanded(groupData.appKey) ? "Collapse" : "Expand"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: root.isAppGroupLive(groupData) ? Theme.primary : Theme.surfaceVariantText
+                                horizontalAlignment: Text.AlignRight
+                                width: parent.width
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.toggleAppExpanded(groupData.appKey)
+                    }
+                }
+
+                Column {
+                    width: parent.width - Theme.spacingL
+                    x: Theme.spacingL
+                    spacing: Theme.spacingXS
+
+                    Repeater {
+                        model: root.isAppExpanded(groupData.appKey) ? groupData.titles : []
+                        delegate: titleDetailComponent
+                    }
+                }
+            }
+        }
+    }
+
+    Component {
+        id: titleDetailComponent
 
         StyledRect {
             property var entryData: modelData
 
             width: parent ? parent.width : 0
-            implicitHeight: contentRow.implicitHeight + Theme.spacingM * 2
+            implicitHeight: detailRow.implicitHeight + Theme.spacingS * 2
             radius: Theme.cornerRadius
             color: root.isLiveEntry(entryData) ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
 
             Row {
-                id: contentRow
+                id: detailRow
                 x: Theme.spacingM
-                y: Theme.spacingM
+                y: Theme.spacingS
                 width: parent.width - Theme.spacingM * 2
                 spacing: Theme.spacingM
 
-                Item {
-                    id: iconHolder
-                    width: 34
-                    height: 34
-
-                    IconImage {
-                        id: appIcon
-                        anchors.fill: parent
-                        source: root.iconSourceForEntry(entryData)
-                        visible: status === Image.Ready
-                        smooth: true
-                        mipmap: true
-                        asynchronous: true
-                    }
-
-                    StyledRect {
-                        anchors.fill: parent
-                        radius: width / 2
-                        color: Theme.surfaceContainerHighest
-                        visible: !appIcon.visible
-
-                        StyledText {
-                            anchors.centerIn: parent
-                            text: root.initialForEntry(entryData)
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.DemiBold
-                            color: Theme.surfaceText
-                        }
-                    }
+                StyledRect {
+                    width: 10
+                    height: 10
+                    radius: 5
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.isLiveEntry(entryData) ? Theme.primary : Theme.outlineButton
                 }
 
                 Column {
-                    id: textColumn
-                    width: Math.max(0, contentRow.width - iconHolder.width - durationColumn.width - contentRow.spacing * 2)
+                    width: Math.max(0, detailRow.width - 10 - detailDurationColumn.width - detailRow.spacing * 2)
                     spacing: Theme.spacingXS
 
                     StyledText {
                         text: entryData.title || entryData.appName || "Untitled Window"
-                        font.pixelSize: Theme.fontSizeMedium
+                        font.pixelSize: Theme.fontSizeSmall + 1
                         font.weight: Font.DemiBold
                         color: Theme.surfaceText
                         maximumLineCount: 1
@@ -386,7 +494,7 @@ PluginComponent {
                     }
 
                     StyledText {
-                        text: root.subtitleForEntry(entryData)
+                        text: root.subtitleForTitleEntry(entryData)
                         visible: text.length > 0
                         font.pixelSize: Theme.fontSizeSmall
                         color: Theme.surfaceVariantText
@@ -397,14 +505,14 @@ PluginComponent {
                 }
 
                 Column {
-                    id: durationColumn
-                    width: Math.max(durationText.implicitWidth, liveText.implicitWidth)
+                    id: detailDurationColumn
+                    width: Math.max(detailDurationText.implicitWidth, detailLiveText.implicitWidth)
                     spacing: Theme.spacingXS
 
                     StyledText {
-                        id: durationText
+                        id: detailDurationText
                         text: TimeUtils.formatDuration(entryData.totalMs)
-                        font.pixelSize: Theme.fontSizeSmall + 1
+                        font.pixelSize: Theme.fontSizeSmall
                         font.weight: Font.DemiBold
                         color: Theme.surfaceText
                         horizontalAlignment: Text.AlignRight
@@ -412,7 +520,7 @@ PluginComponent {
                     }
 
                     StyledText {
-                        id: liveText
+                        id: detailLiveText
                         text: root.isLiveEntry(entryData) ? "Live" : ""
                         visible: text.length > 0
                         font.pixelSize: Theme.fontSizeSmall
@@ -938,10 +1046,90 @@ PluginComponent {
         return entries;
     }
 
+    function buildOverallAppGroups() {
+        const aggregate = {};
+
+        for (let i = 0; i < overallEntries.length; i++) {
+            const entry = overallEntries[i];
+            const appKey = entry.appId || entry.appName || entry.title || entry.bucketKey;
+
+            if (!TimeUtils.isPlainObject(aggregate[appKey])) {
+                aggregate[appKey] = {
+                    appKey: appKey,
+                    appId: entry.appId || "",
+                    appName: entry.appName || "",
+                    title: entry.title || entry.appName || "Untitled Window",
+                    desktopEntryId: entry.desktopEntryId || "",
+                    totalMs: 0,
+                    lastSeenAt: 0,
+                    titleCount: 0,
+                    titles: []
+                };
+            }
+
+            aggregate[appKey].appId = entry.appId || aggregate[appKey].appId;
+            aggregate[appKey].appName = entry.appName || aggregate[appKey].appName;
+            aggregate[appKey].title = aggregate[appKey].title || entry.title || entry.appName || "Untitled Window";
+            aggregate[appKey].desktopEntryId = entry.desktopEntryId || aggregate[appKey].desktopEntryId;
+            aggregate[appKey].totalMs += Number(entry.totalMs || 0);
+            aggregate[appKey].lastSeenAt = Math.max(aggregate[appKey].lastSeenAt, Number(entry.lastSeenAt || 0));
+            aggregate[appKey].titles.push(entry);
+        }
+
+        const groups = [];
+        for (const appKey in aggregate) {
+            const group = aggregate[appKey];
+            if (group.totalMs <= 0)
+                continue;
+
+            group.titles.sort(function (left, right) {
+                if (left.totalMs !== right.totalMs)
+                    return right.totalMs - left.totalMs;
+                if (left.lastSeenAt !== right.lastSeenAt)
+                    return right.lastSeenAt - left.lastSeenAt;
+                return left.title.localeCompare(right.title);
+            });
+            group.titleCount = group.titles.length;
+            groups.push(group);
+        }
+
+        groups.sort(function (left, right) {
+            if (left.totalMs !== right.totalMs)
+                return right.totalMs - left.totalMs;
+            if (left.lastSeenAt !== right.lastSeenAt)
+                return right.lastSeenAt - left.lastSeenAt;
+            return root.displayNameForAppGroup(left).localeCompare(root.displayNameForAppGroup(right));
+        });
+
+        return groups;
+    }
+
     function isLiveEntry(entry) {
         return hasFreshLiveSession
             && TimeUtils.isPlainObject(entry)
             && entry.bucketKey === liveSession.bucketKey;
+    }
+
+    function isAppGroupLive(group) {
+        if (!hasFreshLiveSession || !TimeUtils.isPlainObject(group) || !group.titles)
+            return false;
+
+        for (let i = 0; i < group.titles.length; i++) {
+            if (isLiveEntry(group.titles[i]))
+                return true;
+        }
+
+        return false;
+    }
+
+    function isAppExpanded(appKey) {
+        return !!(expandedApps && expandedApps[appKey]);
+    }
+
+    function toggleAppExpanded(appKey) {
+        const nextExpanded = TimeUtils.cloneValue(expandedApps) || {};
+        nextExpanded[appKey] = !nextExpanded[appKey];
+        expandedApps = nextExpanded;
     }
 
     function desktopEntryForApp(appId) {
@@ -962,6 +1150,36 @@ PluginComponent {
             return appName.charAt(0).toUpperCase();
         const title = entry && entry.title ? entry.title : "";
         return title.length > 0 ? title.charAt(0).toUpperCase() : "?";
+    }
+
+    function displayNameForAppGroup(group) {
+        if (!group)
+            return "Unknown App";
+        return group.appName || group.title || group.appId || "Unknown App";
+    }
+
+    function subtitleForAppGroup(group) {
+        if (!group)
+            return "";
+
+        const parts = [];
+        if (group.titleCount > 0)
+            parts.push(group.titleCount === 1 ? "1 title" : group.titleCount + " titles");
+        if (group.appId && group.appId !== group.appName)
+            parts.push(group.appId);
+        return parts.join(" • ");
+    }
+
+    function subtitleForTitleEntry(entry) {
+        if (!entry)
+            return "";
+
+        const parts = [];
+        if (entry.dayCount && entry.dayCount > 1)
+            parts.push(entry.dayCount + " days");
+        if (entry.appName && entry.appName !== entry.title)
+            parts.push(entry.appName);
+        return parts.join(" • ");
     }
 
     function subtitleForEntry(entry) {
