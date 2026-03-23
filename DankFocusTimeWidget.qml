@@ -34,10 +34,13 @@ PluginComponent {
 
     readonly property string todayKey: TimeUtils.dayKeyFromMs(nowMs)
     readonly property var mergedTodayEntries: buildEntriesForDay(todayKey)
+    readonly property var retainedDayKeys: buildRetainedDayKeys()
+    readonly property int trackedDaysCount: buildTrackedDaysCount()
     readonly property real todayPersistedMs: {
         const day = daysState[todayKey];
         return TimeUtils.isPlainObject(day) ? Number(day.totalMs || 0) : 0;
     }
+    readonly property real retainedPersistedMs: calculatePersistedTotalMs()
     readonly property bool hasFreshLease: leaseIsFresh(collectorLease, nowMs)
     readonly property bool hasFreshLiveSession: {
         return TimeUtils.isPlainObject(liveSession)
@@ -50,6 +53,9 @@ PluginComponent {
         return Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
     }
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
+    readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
+    readonly property var overallEntries: buildOverallEntries()
+    readonly property var topOverallEntry: overallEntries.length > 0 ? overallEntries[0] : null
     readonly property string collectorStatusText: {
         if (SessionService.locked)
             return "Locked - timing is paused until you unlock.";
@@ -125,7 +131,7 @@ PluginComponent {
     popoutContent: Component {
         PopoutComponent {
             headerText: "Focus Time"
-            detailsText: "Today's focused-window totals. Locked time is excluded from timing."
+            detailsText: "Overall totals across retained history. Locked time is excluded from timing."
             showCloseButton: true
 
             Column {
@@ -145,17 +151,63 @@ PluginComponent {
                         width: parent.width - Theme.spacingL * 2
                         spacing: Theme.spacingXS
 
-                        StyledText {
-                            text: "Today"
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
+                        Row {
+                            width: parent.width
+                            spacing: Theme.spacingM
 
-                        StyledText {
-                            text: TimeUtils.formatDuration(root.todayTotalMs)
-                            font.pixelSize: Theme.fontSizeLarge + 2
-                            font.weight: Font.DemiBold
-                            color: Theme.surfaceText
+                            Column {
+                                width: (parent.width - Theme.spacingM * 2) / 3
+                                spacing: Theme.spacingXS
+
+                                StyledText {
+                                    text: "Overall"
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    text: TimeUtils.formatDuration(root.overallTotalMs)
+                                    font.pixelSize: Theme.fontSizeLarge + 2
+                                    font.weight: Font.DemiBold
+                                    color: Theme.surfaceText
+                                }
+                            }
+
+                            Column {
+                                width: (parent.width - Theme.spacingM * 2) / 3
+                                spacing: Theme.spacingXS
+
+                                StyledText {
+                                    text: "Today"
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    text: TimeUtils.formatDuration(root.todayTotalMs)
+                                    font.pixelSize: Theme.fontSizeLarge + 2
+                                    font.weight: Font.DemiBold
+                                    color: Theme.surfaceText
+                                }
+                            }
+
+                            Column {
+                                width: (parent.width - Theme.spacingM * 2) / 3
+                                spacing: Theme.spacingXS
+
+                                StyledText {
+                                    text: "Tracked Days"
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    text: root.trackedDaysCount.toString()
+                                    font.pixelSize: Theme.fontSizeLarge + 2
+                                    font.weight: Font.DemiBold
+                                    color: Theme.surfaceText
+                                }
+                            }
                         }
 
                         StyledText {
@@ -166,18 +218,19 @@ PluginComponent {
                         }
 
                         StyledText {
-                            text: root.mergedTodayEntries.length > 0
-                                ? root.mergedTodayEntries.length + " window titles tracked today."
+                            text: root.topOverallEntry
+                                ? "Top title: " + root.topOverallEntry.title + " • " + TimeUtils.formatDuration(root.topOverallEntry.totalMs)
                                 : "No focused-window time has been recorded yet."
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
 
                 Loader {
                     width: parent.width
-                    sourceComponent: root.mergedTodayEntries.length > 0 ? entriesListComponent : emptyStateComponent
+                    sourceComponent: root.overallEntries.length > 0 ? entriesListComponent : emptyStateComponent
                 }
             }
         }
@@ -210,7 +263,7 @@ PluginComponent {
                 }
 
                 StyledText {
-                    text: "Keep the widget on a bar and focus an app window to start building today's totals."
+                    text: "Keep the widget on a bar and focus an app window to start building the overall history."
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                     wrapMode: Text.WordWrap
@@ -224,24 +277,44 @@ PluginComponent {
 
         Item {
             width: parent.width
-            implicitHeight: entriesFlickable.height
+            implicitHeight: entriesSection.implicitHeight
 
-            DankFlickable {
-                id: entriesFlickable
+            Column {
+                id: entriesSection
                 width: parent.width
-                height: Math.min(320, entriesColumn.implicitHeight)
-                contentWidth: width
-                contentHeight: entriesColumn.implicitHeight
-                clip: true
+                spacing: Theme.spacingS
 
-                Column {
-                    id: entriesColumn
-                    width: entriesFlickable.width
-                    spacing: Theme.spacingS
+                StyledText {
+                    text: "Retained Leaderboard"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.DemiBold
+                    color: Theme.surfaceText
+                }
 
-                    Repeater {
-                        model: root.mergedTodayEntries
-                        delegate: entryRowComponent
+                StyledText {
+                    text: "Window-title totals across the last " + root.retentionDays + " days."
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                    wrapMode: Text.WordWrap
+                }
+
+                DankFlickable {
+                    id: entriesFlickable
+                    width: parent.width
+                    height: Math.min(300, entriesColumn.implicitHeight)
+                    contentWidth: width
+                    contentHeight: entriesColumn.implicitHeight
+                    clip: true
+
+                    Column {
+                        id: entriesColumn
+                        width: entriesFlickable.width
+                        spacing: Theme.spacingS
+
+                        Repeater {
+                            model: root.overallEntries
+                            delegate: entryRowComponent
+                        }
                     }
                 }
             }
@@ -759,11 +832,113 @@ PluginComponent {
         return entries;
     }
 
+    function buildRetainedDayKeys() {
+        return Object.keys(daysState).sort();
+    }
+
+    function buildTrackedDaysCount() {
+        const keys = buildRetainedDayKeys();
+        if (hasFreshLiveSession && keys.indexOf(todayKey) === -1)
+            return keys.length + 1;
+        return keys.length;
+    }
+
+    function calculatePersistedTotalMs() {
+        let total = 0;
+        const keys = Object.keys(daysState);
+
+        for (let i = 0; i < keys.length; i++) {
+            const day = daysState[keys[i]];
+            if (!TimeUtils.isPlainObject(day))
+                continue;
+            total += Number(day.totalMs || 0);
+        }
+
+        return total;
+    }
+
+    function buildOverallEntries() {
+        const aggregate = {};
+        const keys = Object.keys(daysState);
+
+        for (let i = 0; i < keys.length; i++) {
+            const day = daysState[keys[i]];
+            if (!TimeUtils.isPlainObject(day) || !TimeUtils.isPlainObject(day.items))
+                continue;
+
+            for (const bucketKey in day.items) {
+                const item = day.items[bucketKey];
+                if (!TimeUtils.isPlainObject(item))
+                    continue;
+
+                if (!TimeUtils.isPlainObject(aggregate[bucketKey])) {
+                    aggregate[bucketKey] = {
+                        bucketKey: bucketKey,
+                        appId: item.appId || "",
+                        appName: item.appName || "",
+                        title: item.title || item.appName || "Untitled Window",
+                        desktopEntryId: item.desktopEntryId || "",
+                        totalMs: 0,
+                        lastSeenAt: 0,
+                        dayCount: 0
+                    };
+                }
+
+                aggregate[bucketKey].appId = item.appId || aggregate[bucketKey].appId;
+                aggregate[bucketKey].appName = item.appName || aggregate[bucketKey].appName;
+                aggregate[bucketKey].title = item.title || aggregate[bucketKey].title;
+                aggregate[bucketKey].desktopEntryId = item.desktopEntryId || aggregate[bucketKey].desktopEntryId;
+                aggregate[bucketKey].totalMs += Number(item.totalMs || 0);
+                aggregate[bucketKey].lastSeenAt = Math.max(aggregate[bucketKey].lastSeenAt, Number(item.lastSeenAt || 0));
+                aggregate[bucketKey].dayCount += 1;
+            }
+        }
+
+        if (hasFreshLiveSession && liveSession.bucketKey) {
+            if (!TimeUtils.isPlainObject(aggregate[liveSession.bucketKey])) {
+                aggregate[liveSession.bucketKey] = {
+                    bucketKey: liveSession.bucketKey,
+                    appId: liveSession.appId || "",
+                    appName: liveSession.appName || "",
+                    title: liveSession.title || liveSession.appName || "Untitled Window",
+                    desktopEntryId: liveSession.desktopEntryId || "",
+                    totalMs: 0,
+                    lastSeenAt: 0,
+                    dayCount: 0
+                };
+            }
+
+            aggregate[liveSession.bucketKey].appId = liveSession.appId || aggregate[liveSession.bucketKey].appId;
+            aggregate[liveSession.bucketKey].appName = liveSession.appName || aggregate[liveSession.bucketKey].appName;
+            aggregate[liveSession.bucketKey].title = liveSession.title || aggregate[liveSession.bucketKey].title;
+            aggregate[liveSession.bucketKey].desktopEntryId = liveSession.desktopEntryId || aggregate[liveSession.bucketKey].desktopEntryId;
+            aggregate[liveSession.bucketKey].totalMs += Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
+            aggregate[liveSession.bucketKey].lastSeenAt = Math.max(aggregate[liveSession.bucketKey].lastSeenAt, nowMs);
+            if (aggregate[liveSession.bucketKey].dayCount === 0)
+                aggregate[liveSession.bucketKey].dayCount = 1;
+        }
+
+        const entries = [];
+        for (const bucketKey in aggregate) {
+            if (aggregate[bucketKey].totalMs > 0)
+                entries.push(aggregate[bucketKey]);
+        }
+
+        entries.sort(function (left, right) {
+            if (left.totalMs !== right.totalMs)
+                return right.totalMs - left.totalMs;
+            if (left.lastSeenAt !== right.lastSeenAt)
+                return right.lastSeenAt - left.lastSeenAt;
+            return left.title.localeCompare(right.title);
+        });
+
+        return entries;
+    }
+
     function isLiveEntry(entry) {
         return hasFreshLiveSession
             && TimeUtils.isPlainObject(entry)
-            && entry.bucketKey === liveSession.bucketKey
-            && liveSession.dayKey === todayKey;
+            && entry.bucketKey === liveSession.bucketKey;
     }
 
     function desktopEntryForApp(appId) {
@@ -789,8 +964,11 @@ PluginComponent {
     function subtitleForEntry(entry) {
         if (!entry)
             return "";
-        if (!entry.appName || entry.appName === entry.title)
-            return "";
-        return entry.appName;
+        const parts = [];
+        if (entry.appName && entry.appName !== entry.title)
+            parts.push(entry.appName);
+        if (entry.dayCount && entry.dayCount > 1)
+            parts.push(entry.dayCount + " days");
+        return parts.join(" • ");
     }
 }
