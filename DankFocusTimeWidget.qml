@@ -98,7 +98,8 @@ PluginComponent {
 
     property bool initialized: false
     property bool isMaster: false
-    property real nowMs: Date.now()
+    property real liveNowMs: Date.now()
+    property real statsNowMs: Date.now()
     property string selectedPeriod: normalizedDefaultView(pluginData.defaultView)
     property string historyDayKey: suggestedHistoryDayKey()
     property var daysState: ({})
@@ -107,13 +108,13 @@ PluginComponent {
     property var liveSession: null
     property var activeSession: null
 
-    readonly property string todayKey: TimeUtils.dayKeyFromMs(nowMs)
-    readonly property string yesterdayKey: previousDayKey(nowMs)
-    readonly property string historyMinDayKey: TimeUtils.retentionThresholdKey(retentionDays, nowMs)
+    readonly property string todayKey: TimeUtils.dayKeyFromMs(statsNowMs)
+    readonly property string yesterdayKey: previousDayKey(statsNowMs)
+    readonly property string historyMinDayKey: TimeUtils.retentionThresholdKey(retentionDays, statsNowMs)
     readonly property string clampedHistoryDayKey: clampHistoryDayKey(historyDayKey)
-    readonly property var mergedTodayEntries: buildEntriesForDay(todayKey)
-    readonly property var mergedYesterdayEntries: buildEntriesForDay(yesterdayKey)
-    readonly property var mergedHistoryEntries: buildEntriesForDay(clampedHistoryDayKey)
+    readonly property var mergedTodayEntries: buildEntriesForDay(todayKey, statsNowMs)
+    readonly property var mergedYesterdayEntries: buildEntriesForDay(yesterdayKey, statsNowMs)
+    readonly property var mergedHistoryEntries: buildEntriesForDay(clampedHistoryDayKey, statsNowMs)
     readonly property var retainedDayKeys: buildRetainedDayKeys()
     readonly property int trackedDaysCount: buildTrackedDaysCount()
     readonly property var periodTabs: ([
@@ -127,21 +128,27 @@ PluginComponent {
         return TimeUtils.isPlainObject(day) ? Number(day.totalMs || 0) : 0;
     }
     readonly property real retainedPersistedMs: calculatePersistedTotalMs()
-    readonly property bool hasFreshLease: leaseIsFresh(collectorLease, nowMs)
+    readonly property bool hasFreshLease: leaseIsFresh(collectorLease, liveNowMs)
+    readonly property bool hasFreshStatsLease: leaseIsFresh(collectorLease, statsNowMs)
     readonly property bool hasFreshLiveSession: {
         return TimeUtils.isPlainObject(liveSession)
             && hasFreshLease
             && collectorLease.ownerInstanceId === liveSession.ownerInstanceId;
     }
+    readonly property bool hasFreshStatsLiveSession: {
+        return TimeUtils.isPlainObject(liveSession)
+            && hasFreshStatsLease
+            && collectorLease.ownerInstanceId === liveSession.ownerInstanceId;
+    }
     readonly property real todayLiveDeltaMs: {
         if (!hasFreshLiveSession || liveSession.dayKey !== todayKey)
             return 0;
-        return Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
+        return Math.max(0, liveNowMs - Number(liveSession.startedAt || liveNowMs));
     }
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
     readonly property real yesterdayTotalMs: calculateEntriesTotalMs(mergedYesterdayEntries)
     readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
-    readonly property var overallEntries: buildOverallEntries()
+    readonly property var overallEntries: buildOverallEntries(statsNowMs)
     readonly property var overallAppGroups: buildAppGroupsFromEntries(overallEntries)
     readonly property var yesterdayAppGroups: buildAppGroupsFromEntries(mergedYesterdayEntries)
     readonly property var todayAppGroups: buildAppGroupsFromEntries(mergedTodayEntries)
@@ -803,7 +810,7 @@ PluginComponent {
         interval: 1000
         running: true
         repeat: true
-        onTriggered: root.nowMs = Date.now()
+        onTriggered: root.liveNowMs = Date.now()
     }
 
     Timer {
@@ -835,12 +842,17 @@ PluginComponent {
         });
     }
 
+    function touchStatsClock(referenceNow) {
+        statsNowMs = Number(referenceNow || Date.now());
+    }
+
     function refreshLeaseFromGlobal() {
         collectorLease = TimeUtils.cloneValue(PluginService.getGlobalVar(pluginId, leaseVarName, null));
     }
 
     function refreshLiveSessionFromGlobal() {
         liveSession = TimeUtils.cloneValue(PluginService.getGlobalVar(pluginId, liveSessionVarName, null));
+        touchStatsClock();
     }
 
     function leaseIsFresh(lease, referenceNow) {
@@ -918,10 +930,12 @@ PluginComponent {
 
         if (schemaVersion !== stateSchemaVersion || !TimeUtils.isPlainObject(loadedDays)) {
             daysState = ({});
+            touchStatsClock();
             return;
         }
 
         daysState = TimeUtils.pruneDays(TimeUtils.cloneValue(loadedDays), retentionDays, Date.now());
+        touchStatsClock();
     }
 
     function persistState(reason) {
@@ -1012,6 +1026,7 @@ PluginComponent {
 
         appendDuration(activeSession, startMs, endMs);
         activeSession.segmentStartAt = endMs;
+        touchStatsClock(endMs);
         persistState(reason);
     }
 
@@ -1053,6 +1068,7 @@ PluginComponent {
             return;
 
         const referenceNow = Date.now();
+        touchStatsClock(referenceNow);
         const nextSession = currentTrackableSession();
         const sameBucket = activeSession && nextSession && activeSession.bucketKey === nextSession.bucketKey;
         const crossedDay = activeSession
@@ -1098,29 +1114,29 @@ PluginComponent {
         }
     }
 
-    function buildEntriesForDay(dayKey) {
+    function buildEntriesForDay(dayKey, referenceNow) {
         const day = TimeUtils.isPlainObject(daysState[dayKey]) ? TimeUtils.cloneValue(daysState[dayKey]) : {
             totalMs: 0,
             items: {}
         };
         const items = TimeUtils.isPlainObject(day.items) ? day.items : {};
 
-        if (hasFreshLiveSession && liveSession.dayKey === dayKey && liveSession.bucketKey) {
+        if (hasFreshStatsLiveSession && liveSession.dayKey === dayKey && liveSession.bucketKey) {
             const liveEntry = TimeUtils.isPlainObject(items[liveSession.bucketKey]) ? items[liveSession.bucketKey] : {
                 appId: liveSession.appId,
                 appName: liveSession.appName,
                 title: liveSession.title,
                 desktopEntryId: liveSession.desktopEntryId,
                 totalMs: 0,
-                lastSeenAt: nowMs
+                lastSeenAt: referenceNow
             };
 
             liveEntry.appId = liveSession.appId;
             liveEntry.appName = liveSession.appName;
             liveEntry.title = liveSession.title;
             liveEntry.desktopEntryId = liveSession.desktopEntryId;
-            liveEntry.totalMs = Number(liveEntry.totalMs || 0) + Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
-            liveEntry.lastSeenAt = nowMs;
+            liveEntry.totalMs = Number(liveEntry.totalMs || 0) + Math.max(0, referenceNow - Number(liveSession.startedAt || referenceNow));
+            liveEntry.lastSeenAt = referenceNow;
             items[liveSession.bucketKey] = liveEntry;
         }
 
@@ -1162,7 +1178,7 @@ PluginComponent {
 
     function buildTrackedDaysCount() {
         const keys = buildRetainedDayKeys();
-        if (hasFreshLiveSession && keys.indexOf(todayKey) === -1)
+        if (hasFreshStatsLiveSession && keys.indexOf(todayKey) === -1)
             return keys.length + 1;
         return keys.length;
     }
@@ -1181,7 +1197,7 @@ PluginComponent {
         return total;
     }
 
-    function buildOverallEntries() {
+    function buildOverallEntries(referenceNow) {
         const aggregate = {};
         const keys = Object.keys(daysState);
 
@@ -1218,7 +1234,7 @@ PluginComponent {
             }
         }
 
-        if (hasFreshLiveSession && liveSession.bucketKey) {
+        if (hasFreshStatsLiveSession && liveSession.bucketKey) {
             if (!TimeUtils.isPlainObject(aggregate[liveSession.bucketKey])) {
                 aggregate[liveSession.bucketKey] = {
                     bucketKey: liveSession.bucketKey,
@@ -1236,8 +1252,8 @@ PluginComponent {
             aggregate[liveSession.bucketKey].appName = liveSession.appName || aggregate[liveSession.bucketKey].appName;
             aggregate[liveSession.bucketKey].title = liveSession.title || aggregate[liveSession.bucketKey].title;
             aggregate[liveSession.bucketKey].desktopEntryId = liveSession.desktopEntryId || aggregate[liveSession.bucketKey].desktopEntryId;
-            aggregate[liveSession.bucketKey].totalMs += Math.max(0, nowMs - Number(liveSession.startedAt || nowMs));
-            aggregate[liveSession.bucketKey].lastSeenAt = Math.max(aggregate[liveSession.bucketKey].lastSeenAt, nowMs);
+            aggregate[liveSession.bucketKey].totalMs += Math.max(0, referenceNow - Number(liveSession.startedAt || referenceNow));
+            aggregate[liveSession.bucketKey].lastSeenAt = Math.max(aggregate[liveSession.bucketKey].lastSeenAt, referenceNow);
             if (aggregate[liveSession.bucketKey].dayCount === 0)
                 aggregate[liveSession.bucketKey].dayCount = 1;
         }
