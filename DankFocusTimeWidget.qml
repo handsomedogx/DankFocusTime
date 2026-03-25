@@ -26,6 +26,7 @@ PluginComponent {
     readonly property string ignoredAppId: "org.quickshell"
     readonly property string instanceId: "dft-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8)
     readonly property Toplevel activeWindow: ToplevelManager.activeToplevel
+    readonly property var mediaPlayers: MprisController.availablePlayers
     readonly property string languageMode: normalizedLanguageMode(pluginData.languageMode)
     readonly property string uiLanguageCode: {
         if (languageMode === "zh" || languageMode === "en")
@@ -103,6 +104,7 @@ PluginComponent {
     property bool isMaster: false
     property real liveNowMs: Date.now()
     property real statsNowMs: Date.now()
+    property real rawIdleSinceMs: 0
     property string selectedPeriod: normalizedDefaultView(pluginData.defaultView)
     property string historyDayKey: suggestedHistoryDayKey()
     property bool popoutActive: false
@@ -136,6 +138,19 @@ PluginComponent {
     readonly property real retainedPersistedMs: calculatePersistedTotalMs()
     readonly property bool hasFreshLease: leaseIsFresh(collectorLease, liveNowMs)
     readonly property bool hasFreshStatsLease: leaseIsFresh(collectorLease, statsNowMs)
+    readonly property bool hasFullscreenActiveWindow: !!activeWindow && !!activeWindow.fullscreen
+    readonly property var activeWindowComparableIds: buildComparableIdsForWindow(activeWindow)
+    readonly property var activeWindowMediaPlayer: findMatchingMediaPlayer(mediaPlayers, activeWindowComparableIds)
+    readonly property var activeMediaComparableIds: buildComparableIdsForMediaPlayer(activeWindowMediaPlayer)
+    readonly property bool activeMediaMatchesWindow: comparableIdSetsOverlap(activeWindowComparableIds, activeMediaComparableIds)
+    readonly property bool mediaViewingBypassesIdle: {
+        if (!activeWindowMediaPlayer || !activeWindowMediaPlayer.isPlaying || !activeMediaMatchesWindow)
+            return false;
+
+        return hasFullscreenActiveWindow || !!activeWindowMediaPlayer.fullscreen;
+    }
+    readonly property bool idleFilteringSuppressed: mediaViewingBypassesIdle
+    readonly property bool effectiveIdleDetected: idleDetected && !idleFilteringSuppressed
     readonly property bool hasFreshLiveSession: {
         return TimeUtils.isPlainObject(liveSession)
             && hasFreshLease
@@ -769,12 +784,24 @@ PluginComponent {
         if (isMaster)
             persistState("retention-change", true);
     }
+    onIdleFilteringSuppressedChanged: {
+        if (!initialized || !isMaster || !idleDetected)
+            return;
+
+        if (idleFilteringSuppressed) {
+            syncTracking("idle-bypass-start");
+            return;
+        }
+
+        syncTracking("idle-start", Date.now());
+    }
     onIdleThresholdSecondsChanged: {
         ensureIdleMonitor();
 
         if (idleThresholdSeconds <= 0) {
             if (idleDetected) {
                 idleDetected = false;
+                rawIdleSinceMs = 0;
                 syncTracking("idle-end");
             }
             return;
@@ -907,6 +934,7 @@ PluginComponent {
 
             idleMonitorAvailable = true;
             idleDetected = !!idleMonitor.isIdle && idleThresholdSeconds > 0;
+            rawIdleSinceMs = idleDetected ? Math.max(0, Date.now() - idleThresholdSeconds * 1000) : 0;
         } catch (error) {
             idleMonitorAvailable = false;
             console.warn("DankFocusTime: IdleMonitor unavailable:", error);
@@ -926,10 +954,13 @@ PluginComponent {
         if (nextIdle) {
             const referenceNow = Date.now();
             const activeUntil = Math.max(0, referenceNow - idleThresholdSeconds * 1000);
-            syncTracking("idle-start", activeUntil);
+            rawIdleSinceMs = activeUntil;
+            if (!idleFilteringSuppressed)
+                syncTracking("idle-start", activeUntil);
             return;
         }
 
+        rawIdleSinceMs = 0;
         syncTracking("idle-end");
     }
 
@@ -1040,7 +1071,7 @@ PluginComponent {
     }
 
     function currentTrackableSession() {
-        if (SessionService.locked || idleDetected || !activeWindow || (!activeWindow.appId && !activeWindow.title))
+        if (SessionService.locked || effectiveIdleDetected || !activeWindow || (!activeWindow.appId && !activeWindow.title))
             return null;
 
         if (activeWindow.appId === ignoredAppId)
@@ -1192,7 +1223,7 @@ PluginComponent {
 
         if (!sameBucket) {
             activeSession = nextSession;
-            activeSession.segmentStartAt = referenceNow;
+            activeSession.segmentStartAt = Math.min(referenceNow, checkpointNow);
             publishLiveSession(activeSession);
             if (shouldFlushState)
                 persistState(reason);
@@ -1404,6 +1435,91 @@ PluginComponent {
             totalMs += Math.max(0, referenceNow - Number(liveSession.startedAt || referenceNow));
 
         return totalMs;
+    }
+
+    function pushComparableId(target, value) {
+        const normalizedValue = (value || "").toString().trim().toLowerCase().replace(/\.desktop$/, "");
+        if (!normalizedValue)
+            return;
+
+        if (target.indexOf(normalizedValue) === -1)
+            target.push(normalizedValue);
+
+        const compactValue = normalizedValue.replace(/[^a-z0-9]+/g, "");
+        if (compactValue && target.indexOf(compactValue) === -1)
+            target.push(compactValue);
+
+        const dotSegments = normalizedValue.split(".");
+        const lastDotSegment = dotSegments[dotSegments.length - 1];
+        if (lastDotSegment && target.indexOf(lastDotSegment) === -1)
+            target.push(lastDotSegment);
+
+        const wordSegments = normalizedValue.split(/[-_ ]+/);
+        const lastWordSegment = wordSegments[wordSegments.length - 1];
+        if (lastWordSegment && target.indexOf(lastWordSegment) === -1)
+            target.push(lastWordSegment);
+    }
+
+    function buildComparableIds(value) {
+        const comparableIds = [];
+        const rawValue = (value || "").toString().trim();
+        if (!rawValue)
+            return comparableIds;
+
+        pushComparableId(comparableIds, rawValue);
+        pushComparableId(comparableIds, Paths.moddedAppId(rawValue));
+        return comparableIds;
+    }
+
+    function buildComparableIdsForWindow(window) {
+        if (!window)
+            return [];
+
+        const appId = window.appId || "";
+        const comparableIds = buildComparableIds(appId);
+        const moddedAppId = appId ? Paths.moddedAppId(appId) : "";
+        const desktopEntry = moddedAppId ? DesktopEntries.heuristicLookup(moddedAppId) : null;
+
+        if (desktopEntry && desktopEntry.id)
+            pushComparableId(comparableIds, desktopEntry.id);
+
+        return comparableIds;
+    }
+
+    function buildComparableIdsForMediaPlayer(player) {
+        if (!player)
+            return [];
+
+        const comparableIds = buildComparableIds(player.desktopEntry || "");
+        pushComparableId(comparableIds, player.identity || "");
+        return comparableIds;
+    }
+
+    function findMatchingMediaPlayer(players, windowComparableIds) {
+        const availablePlayers = players || [];
+
+        for (let i = 0; i < Number(availablePlayers.length || 0); i++) {
+            const player = availablePlayers[i];
+            if (!player || !player.isPlaying)
+                continue;
+
+            if (comparableIdSetsOverlap(windowComparableIds, buildComparableIdsForMediaPlayer(player)))
+                return player;
+        }
+
+        return null;
+    }
+
+    function comparableIdSetsOverlap(leftValues, rightValues) {
+        const left = Array.isArray(leftValues) ? leftValues : [];
+        const right = Array.isArray(rightValues) ? rightValues : [];
+
+        for (let i = 0; i < left.length; i++) {
+            if (left[i] && right.indexOf(left[i]) !== -1)
+                return true;
+        }
+
+        return false;
     }
 
     function normalizedLanguageMode(value) {
