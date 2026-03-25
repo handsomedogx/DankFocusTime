@@ -9,6 +9,7 @@ PluginSettings {
     pluginId: "dankFocusTime"
 
     property string languageMode: "system"
+    property bool settingsSyncScheduled: false
     readonly property bool idleMonitorAvailable: {
         try {
             return typeof IdleMonitor !== "undefined";
@@ -99,17 +100,59 @@ PluginSettings {
         { label: translateText("view_today"), value: "today" }
     ])
 
-    Component.onCompleted: refreshLanguageMode()
-    onPluginServiceChanged: refreshLanguageMode()
-    onSettingChanged: refreshLanguageMode()
+    Component.onCompleted: scheduleSettingsSync()
+    onPluginServiceChanged: scheduleSettingsSync()
+    onPluginIdChanged: scheduleSettingsSync()
+    onSettingChanged: scheduleSettingsSync()
 
     function refreshLanguageMode() {
         languageMode = loadValue("languageMode", "system");
     }
 
+    function syncStoredSettings() {
+        refreshLanguageMode();
+        reloadNestedSettingValues(settingsColumn);
+    }
+
+    function runScheduledSettingsSync() {
+        settingsSyncScheduled = false;
+        syncStoredSettings();
+    }
+
+    function scheduleSettingsSync() {
+        if (settingsSyncScheduled)
+            return;
+
+        settingsSyncScheduled = true;
+        Qt.callLater(runScheduledSettingsSync);
+    }
+
+    function reloadNestedSettingValues(item) {
+        if (!item)
+            return;
+
+        const childItems = item.children || [];
+        for (let i = 0; i < childItems.length; i++) {
+            const child = childItems[i];
+            if (child && typeof child.loadValue === "function")
+                child.loadValue();
+            reloadNestedSettingValues(child);
+        }
+    }
+
     function translateText(key) {
         const languageCatalog = i18nCatalog[uiLanguageCode] || i18nCatalog.en;
         return languageCatalog[key] || i18nCatalog.en[key] || key;
+    }
+
+    Connections {
+        target: root.pluginService
+        enabled: root.pluginService !== null
+
+        function onPluginDataChanged(changedPluginId) {
+            if (changedPluginId === root.pluginId)
+                root.scheduleSettingsSync();
+        }
     }
 
     StyledText {
