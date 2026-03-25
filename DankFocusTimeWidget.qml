@@ -102,6 +102,7 @@ PluginComponent {
     property real statsNowMs: Date.now()
     property string selectedPeriod: normalizedDefaultView(pluginData.defaultView)
     property string historyDayKey: suggestedHistoryDayKey()
+    property bool popoutActive: false
     property var daysState: ({})
     property var expandedApps: ({})
     property var collectorLease: null
@@ -145,7 +146,7 @@ PluginComponent {
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
     readonly property real yesterdayTotalMs: calculateTrackedTotalForDay(yesterdayKey, statsNowMs)
     readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
-    readonly property var currentPeriodEntries: buildCurrentPeriodEntries()
+    readonly property var currentPeriodEntries: popoutActive ? buildCurrentPeriodEntries() : []
     readonly property var currentPeriodAppGroups: buildAppGroupsFromEntries(currentPeriodEntries)
     readonly property var currentTopEntry: currentPeriodAppGroups.length > 0 ? currentPeriodAppGroups[0] : null
     readonly property bool canNavigateHistoryBack: clampedHistoryDayKey > historyMinDayKey
@@ -213,6 +214,18 @@ PluginComponent {
 
     popoutContent: Component {
         PopoutComponent {
+            Component.onDestruction: root.popoutActive = false
+            onParentPopoutChanged: root.popoutActive = !!(parentPopout && parentPopout.shouldBeVisible)
+
+            Connections {
+                target: parentPopout
+                ignoreUnknownSignals: true
+
+                function onShouldBeVisibleChanged() {
+                    root.popoutActive = !!(parentPopout && parentPopout.shouldBeVisible);
+                }
+            }
+
             headerText: root.translateText("focus_time")
             detailsText: root.translateText("popout_details")
             showCloseButton: true
