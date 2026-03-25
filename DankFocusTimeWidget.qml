@@ -112,9 +112,6 @@ PluginComponent {
     readonly property string yesterdayKey: previousDayKey(statsNowMs)
     readonly property string historyMinDayKey: TimeUtils.retentionThresholdKey(retentionDays, statsNowMs)
     readonly property string clampedHistoryDayKey: clampHistoryDayKey(historyDayKey)
-    readonly property var mergedTodayEntries: buildEntriesForDay(todayKey, statsNowMs)
-    readonly property var mergedYesterdayEntries: buildEntriesForDay(yesterdayKey, statsNowMs)
-    readonly property var mergedHistoryEntries: buildEntriesForDay(clampedHistoryDayKey, statsNowMs)
     readonly property var retainedDayKeys: buildRetainedDayKeys()
     readonly property int trackedDaysCount: buildTrackedDaysCount()
     readonly property var periodTabs: ([
@@ -146,22 +143,10 @@ PluginComponent {
         return Math.max(0, liveNowMs - Number(liveSession.startedAt || liveNowMs));
     }
     readonly property real todayTotalMs: todayPersistedMs + todayLiveDeltaMs
-    readonly property real yesterdayTotalMs: calculateEntriesTotalMs(mergedYesterdayEntries)
+    readonly property real yesterdayTotalMs: calculateTrackedTotalForDay(yesterdayKey, statsNowMs)
     readonly property real overallTotalMs: retainedPersistedMs + todayLiveDeltaMs
-    readonly property var overallEntries: buildOverallEntries(statsNowMs)
-    readonly property var overallAppGroups: buildAppGroupsFromEntries(overallEntries)
-    readonly property var yesterdayAppGroups: buildAppGroupsFromEntries(mergedYesterdayEntries)
-    readonly property var todayAppGroups: buildAppGroupsFromEntries(mergedTodayEntries)
-    readonly property var historyAppGroups: buildAppGroupsFromEntries(mergedHistoryEntries)
-    readonly property var currentPeriodAppGroups: {
-        if (selectedPeriod === "history")
-            return historyAppGroups;
-        if (selectedPeriod === "yesterday")
-            return yesterdayAppGroups;
-        if (selectedPeriod === "today")
-            return todayAppGroups;
-        return overallAppGroups;
-    }
+    readonly property var currentPeriodEntries: buildCurrentPeriodEntries()
+    readonly property var currentPeriodAppGroups: buildAppGroupsFromEntries(currentPeriodEntries)
     readonly property var currentTopEntry: currentPeriodAppGroups.length > 0 ? currentPeriodAppGroups[0] : null
     readonly property bool canNavigateHistoryBack: clampedHistoryDayKey > historyMinDayKey
     readonly property bool canNavigateHistoryForward: clampedHistoryDayKey < todayKey
@@ -1273,6 +1258,26 @@ PluginComponent {
         });
 
         return entries;
+    }
+
+    function buildCurrentPeriodEntries() {
+        if (selectedPeriod === "history")
+            return buildEntriesForDay(clampedHistoryDayKey, statsNowMs);
+        if (selectedPeriod === "yesterday")
+            return buildEntriesForDay(yesterdayKey, statsNowMs);
+        if (selectedPeriod === "today")
+            return buildEntriesForDay(todayKey, statsNowMs);
+        return buildOverallEntries(statsNowMs);
+    }
+
+    function calculateTrackedTotalForDay(dayKey, referenceNow) {
+        const day = daysState[dayKey];
+        let totalMs = TimeUtils.isPlainObject(day) ? Number(day.totalMs || 0) : 0;
+
+        if (hasFreshStatsLiveSession && liveSession.dayKey === dayKey)
+            totalMs += Math.max(0, referenceNow - Number(liveSession.startedAt || referenceNow));
+
+        return totalMs;
     }
 
     function normalizedLanguageMode(value) {
