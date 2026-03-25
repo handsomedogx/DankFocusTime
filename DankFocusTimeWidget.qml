@@ -103,6 +103,7 @@ PluginComponent {
     property string selectedPeriod: normalizedDefaultView(pluginData.defaultView)
     property string historyDayKey: suggestedHistoryDayKey()
     property bool popoutActive: false
+    property bool stateDirty: false
     property var daysState: ({})
     property var expandedApps: ({})
     property var collectorLease: null
@@ -759,7 +760,7 @@ PluginComponent {
         daysState = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
         ensureHistoryDayKey();
         if (isMaster)
-            persistState("retention-change");
+            persistState("retention-change", true);
     }
 
     Connections {
@@ -844,6 +845,18 @@ PluginComponent {
         statsNowMs = Number(referenceNow || Date.now());
     }
 
+    function shallowCloneObject(source) {
+        const clone = {};
+
+        if (!TimeUtils.isPlainObject(source))
+            return clone;
+
+        for (const key in source)
+            clone[key] = source[key];
+
+        return clone;
+    }
+
     function refreshLeaseFromGlobal() {
         collectorLease = TimeUtils.cloneValue(PluginService.getGlobalVar(pluginId, leaseVarName, null));
     }
@@ -913,9 +926,7 @@ PluginComponent {
         if (currentSchemaVersion === stateSchemaVersion)
             return;
 
-        const snapshotDays = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
-        daysState = snapshotDays;
-        PluginService.savePluginState(pluginId, "days", snapshotDays);
+        persistState("schema-change", true);
         PluginService.savePluginState(pluginId, "schemaVersion", stateSchemaVersion);
     }
 
@@ -928,21 +939,28 @@ PluginComponent {
 
         if (schemaVersion !== stateSchemaVersion || !TimeUtils.isPlainObject(loadedDays)) {
             daysState = ({});
+            stateDirty = false;
             touchStatsClock();
             return;
         }
 
         daysState = TimeUtils.pruneDays(TimeUtils.cloneValue(loadedDays), retentionDays, Date.now());
+        stateDirty = false;
         touchStatsClock();
     }
 
-    function persistState(reason) {
+    function persistState(reason, forceSave) {
         if (!pluginId || !isMaster)
-            return;
+            return false;
+
+        if (!forceSave && !stateDirty)
+            return false;
 
         const snapshotDays = TimeUtils.pruneDays(daysState, retentionDays, Date.now());
         daysState = snapshotDays;
+        stateDirty = false;
         PluginService.savePluginState(pluginId, "days", snapshotDays);
+        return true;
     }
 
     function currentTrackableSession() {
@@ -974,19 +992,21 @@ PluginComponent {
         if (!session || !(endMs > startMs))
             return;
 
-        const nextDays = TimeUtils.cloneValue(daysState) || {};
+        const nextDays = shallowCloneObject(daysState);
         let cursor = startMs;
 
         while (cursor < endMs) {
             const dayKey = TimeUtils.dayKeyFromMs(cursor);
             const boundary = Math.min(endMs, TimeUtils.nextDayStartMs(cursor));
             const duration = boundary - cursor;
-            const existingDay = TimeUtils.isPlainObject(nextDays[dayKey]) ? nextDays[dayKey] : {
+            const existingDay = TimeUtils.isPlainObject(nextDays[dayKey]) ? nextDays[dayKey] : null;
+            const nextDay = TimeUtils.isPlainObject(existingDay) ? shallowCloneObject(existingDay) : {
                 totalMs: 0,
                 items: {}
             };
-            const nextItems = TimeUtils.isPlainObject(existingDay.items) ? existingDay.items : {};
-            const existingEntry = TimeUtils.isPlainObject(nextItems[session.bucketKey]) ? nextItems[session.bucketKey] : {
+            const nextItems = shallowCloneObject(nextDay.items);
+            const existingEntry = TimeUtils.isPlainObject(nextItems[session.bucketKey]) ? nextItems[session.bucketKey] : null;
+            const nextEntry = TimeUtils.isPlainObject(existingEntry) ? shallowCloneObject(existingEntry) : {
                 appId: session.appId,
                 appName: session.appName,
                 title: session.title,
@@ -995,23 +1015,23 @@ PluginComponent {
                 lastSeenAt: endMs
             };
 
-            existingEntry.appId = session.appId;
-            existingEntry.appName = session.appName;
-            existingEntry.title = session.title;
-            existingEntry.desktopEntryId = session.desktopEntryId;
-            existingEntry.totalMs = Number(existingEntry.totalMs || 0) + duration;
-            existingEntry.lastSeenAt = endMs;
-            nextItems[session.bucketKey] = existingEntry;
+            nextEntry.appId = session.appId;
+            nextEntry.appName = session.appName;
+            nextEntry.title = session.title;
+            nextEntry.desktopEntryId = session.desktopEntryId;
+            nextEntry.totalMs = Number(nextEntry.totalMs || 0) + duration;
+            nextEntry.lastSeenAt = endMs;
+            nextItems[session.bucketKey] = nextEntry;
 
-            nextDays[dayKey] = {
-                totalMs: Number(existingDay.totalMs || 0) + duration,
-                items: nextItems
-            };
+            nextDay.totalMs = Number(nextDay.totalMs || 0) + duration;
+            nextDay.items = nextItems;
+            nextDays[dayKey] = nextDay;
 
             cursor = boundary;
         }
 
-        daysState = TimeUtils.pruneDays(nextDays, retentionDays, endMs);
+        daysState = nextDays;
+        stateDirty = true;
     }
 
     function checkpointActiveSession(endMs, reason) {
@@ -1025,7 +1045,6 @@ PluginComponent {
         appendDuration(activeSession, startMs, endMs);
         activeSession.segmentStartAt = endMs;
         touchStatsClock(endMs);
-        persistState(reason);
     }
 
     function publishLiveSession(session) {
@@ -1059,6 +1078,9 @@ PluginComponent {
 
         activeSession = null;
         clearLiveSessionIfOwned();
+
+        if (reason === "destroy" || reason === "lease-lost")
+            persistState(reason);
     }
 
     function syncTracking(reason) {
@@ -1066,6 +1088,7 @@ PluginComponent {
             return;
 
         const referenceNow = Date.now();
+        const shouldFlushState = reason === "periodic";
         touchStatsClock(referenceNow);
         const nextSession = currentTrackableSession();
         const sameBucket = activeSession && nextSession && activeSession.bucketKey === nextSession.bucketKey;
@@ -1079,6 +1102,8 @@ PluginComponent {
         if (!nextSession) {
             activeSession = null;
             clearLiveSessionIfOwned();
+            if (shouldFlushState)
+                persistState(reason);
             return;
         }
 
@@ -1086,6 +1111,8 @@ PluginComponent {
             activeSession = nextSession;
             activeSession.segmentStartAt = referenceNow;
             publishLiveSession(activeSession);
+            if (shouldFlushState)
+                persistState(reason);
             return;
         }
 
@@ -1097,6 +1124,9 @@ PluginComponent {
         if (needsCheckpoint)
             activeSession.segmentStartAt = referenceNow;
         publishLiveSession(activeSession);
+
+        if (shouldFlushState)
+            persistState(reason);
     }
 
     function clearLeaseIfOwned() {
