@@ -18,6 +18,9 @@ PluginComponent {
     readonly property int leaseIntervalMs: 2000
     readonly property int leaseTtlMs: 5000
     readonly property int flushIntervalMs: 15000
+    readonly property int minimumFocusSeconds: normalizedMinimumFocusSeconds(pluginData.minimumFocusSeconds)
+    readonly property int minimumFocusMs: minimumFocusSeconds * 1000
+    readonly property int idleThresholdSeconds: normalizedIdleThresholdSeconds(pluginData.idleThresholdSeconds)
     readonly property string leaseVarName: "collectorLease"
     readonly property string liveSessionVarName: "liveSession"
     readonly property string ignoredAppId: "org.quickshell"
@@ -104,11 +107,15 @@ PluginComponent {
     property string historyDayKey: suggestedHistoryDayKey()
     property bool popoutActive: false
     property bool stateDirty: false
+    property bool idleMonitorAttempted: false
+    property bool idleMonitorAvailable: false
+    property bool idleDetected: false
     property var daysState: ({})
     property var expandedApps: ({})
     property var collectorLease: null
     property var liveSession: null
     property var activeSession: null
+    property var idleMonitor: null
 
     readonly property string todayKey: TimeUtils.dayKeyFromMs(statsNowMs)
     readonly property string yesterdayKey: previousDayKey(statsNowMs)
@@ -762,6 +769,20 @@ PluginComponent {
         if (isMaster)
             persistState("retention-change", true);
     }
+    onIdleThresholdSecondsChanged: {
+        ensureIdleMonitor();
+
+        if (idleThresholdSeconds <= 0) {
+            if (idleDetected) {
+                idleDetected = false;
+                syncTracking("idle-end");
+            }
+            return;
+        }
+
+        if (idleMonitor && !!idleMonitor.isIdle !== idleDetected)
+            handleIdleMonitorChanged();
+    }
 
     Connections {
         target: root.activeWindow
@@ -834,6 +855,7 @@ PluginComponent {
         loadStateFromService();
         refreshLeaseFromGlobal();
         refreshLiveSessionFromGlobal();
+        ensureIdleMonitor();
 
         Qt.callLater(function () {
             tickLease();
@@ -855,6 +877,60 @@ PluginComponent {
             clone[key] = source[key];
 
         return clone;
+    }
+
+    function ensureIdleMonitor() {
+        if (idleMonitor || idleMonitorAttempted)
+            return;
+
+        idleMonitorAttempted = true;
+
+        try {
+            const qmlString = `
+                import QtQuick
+                import Quickshell.Wayland
+
+                IdleMonitor {
+                    enabled: false
+                    respectInhibitors: true
+                    timeout: 0
+                }
+            `;
+
+            idleMonitor = Qt.createQmlObject(qmlString, root, "DankFocusTime.IdleMonitor");
+            idleMonitor.timeout = Qt.binding(() => root.idleThresholdSeconds > 0 ? root.idleThresholdSeconds : 86400);
+            idleMonitor.respectInhibitors = true;
+            idleMonitor.enabled = Qt.binding(() => root.initialized && root.idleThresholdSeconds > 0);
+            idleMonitor.isIdleChanged.connect(function () {
+                root.handleIdleMonitorChanged();
+            });
+
+            idleMonitorAvailable = true;
+            idleDetected = !!idleMonitor.isIdle && idleThresholdSeconds > 0;
+        } catch (error) {
+            idleMonitorAvailable = false;
+            console.warn("DankFocusTime: IdleMonitor unavailable:", error);
+        }
+    }
+
+    function handleIdleMonitorChanged() {
+        if (!idleMonitor)
+            return;
+
+        const nextIdle = !!idleMonitor.isIdle && idleThresholdSeconds > 0;
+        if (nextIdle === idleDetected)
+            return;
+
+        idleDetected = nextIdle;
+
+        if (nextIdle) {
+            const referenceNow = Date.now();
+            const activeUntil = Math.max(0, referenceNow - idleThresholdSeconds * 1000);
+            syncTracking("idle-start", activeUntil);
+            return;
+        }
+
+        syncTracking("idle-end");
     }
 
     function refreshLeaseFromGlobal() {
@@ -964,7 +1040,7 @@ PluginComponent {
     }
 
     function currentTrackableSession() {
-        if (SessionService.locked || !activeWindow || (!activeWindow.appId && !activeWindow.title))
+        if (SessionService.locked || idleDetected || !activeWindow || (!activeWindow.appId && !activeWindow.title))
             return null;
 
         if (activeWindow.appId === ignoredAppId)
@@ -990,7 +1066,10 @@ PluginComponent {
 
     function appendDuration(session, startMs, endMs) {
         if (!session || !(endMs > startMs))
-            return;
+            return false;
+
+        if (minimumFocusMs > 0 && (endMs - startMs) < minimumFocusMs)
+            return false;
 
         const nextDays = shallowCloneObject(daysState);
         let cursor = startMs;
@@ -1032,19 +1111,22 @@ PluginComponent {
 
         daysState = nextDays;
         stateDirty = true;
+        return true;
     }
 
     function checkpointActiveSession(endMs, reason) {
         if (!activeSession)
-            return;
+            return false;
 
         const startMs = Number(activeSession.segmentStartAt || 0);
         if (!(endMs > startMs))
-            return;
+            return false;
 
-        appendDuration(activeSession, startMs, endMs);
+        const appended = appendDuration(activeSession, startMs, endMs);
         activeSession.segmentStartAt = endMs;
-        touchStatsClock(endMs);
+        if (appended)
+            touchStatsClock(endMs);
+        return appended;
     }
 
     function publishLiveSession(session) {
@@ -1083,21 +1165,22 @@ PluginComponent {
             persistState(reason);
     }
 
-    function syncTracking(reason) {
+    function syncTracking(reason, checkpointReferenceNow) {
         if (!initialized || !isMaster)
             return;
 
         const referenceNow = Date.now();
-        const shouldFlushState = reason === "periodic";
+        const checkpointNow = checkpointReferenceNow !== undefined ? Number(checkpointReferenceNow) : referenceNow;
+        const shouldFlushState = reason === "periodic" || reason === "idle-start";
         touchStatsClock(referenceNow);
         const nextSession = currentTrackableSession();
         const sameBucket = activeSession && nextSession && activeSession.bucketKey === nextSession.bucketKey;
         const crossedDay = activeSession
-            && TimeUtils.dayKeyFromMs(activeSession.segmentStartAt || referenceNow) !== TimeUtils.dayKeyFromMs(referenceNow);
+            && TimeUtils.dayKeyFromMs(activeSession.segmentStartAt || checkpointNow) !== TimeUtils.dayKeyFromMs(checkpointNow);
         const needsCheckpoint = !!activeSession && (reason === "periodic" || !sameBucket || crossedDay);
 
         if (needsCheckpoint)
-            checkpointActiveSession(referenceNow, reason);
+            checkpointActiveSession(checkpointNow, reason);
 
         if (!nextSession) {
             activeSession = null;
@@ -1336,6 +1419,22 @@ PluginComponent {
         if (!isFinite(numericValue))
             return 30;
         return Math.max(7, Math.min(90, numericValue));
+    }
+
+    function normalizedMinimumFocusSeconds(value) {
+        const rawValue = value === undefined || value === null || value === "" ? 2 : value;
+        const numericValue = Math.round(Number(rawValue));
+        if (!isFinite(numericValue))
+            return 2;
+        return Math.max(0, Math.min(10, numericValue));
+    }
+
+    function normalizedIdleThresholdSeconds(value) {
+        const rawValue = value === undefined || value === null || value === "" ? 60 : value;
+        const numericValue = Math.round(Number(rawValue));
+        if (!isFinite(numericValue))
+            return 60;
+        return Math.max(0, Math.min(300, numericValue));
     }
 
     function previousDayKey(referenceMs) {
