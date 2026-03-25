@@ -111,7 +111,7 @@ PluginSettings {
 
     function syncStoredSettings() {
         refreshLanguageMode();
-        reloadNestedSettingValues(settingsColumn);
+        reloadDeclaredSettingValues();
     }
 
     function runScheduledSettingsSync() {
@@ -137,6 +137,16 @@ PluginSettings {
             if (child && typeof child.loadValue === "function")
                 child.loadValue();
             reloadNestedSettingValues(child);
+        }
+    }
+
+    function reloadDeclaredSettingValues() {
+        const declaredItems = root.content || [];
+        for (let i = 0; i < declaredItems.length; i++) {
+            const item = declaredItems[i];
+            if (item && typeof item.loadValue === "function")
+                item.loadValue();
+            reloadNestedSettingValues(item);
         }
     }
 
